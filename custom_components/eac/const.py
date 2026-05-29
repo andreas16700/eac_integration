@@ -37,7 +37,7 @@ CURRENT_NAME = "Current"
 M_FUEL_C = "fuel_c"          # fuel adjustment, ¢/kWh
 M_PRODUCTION = "production"   # production multiplier, €/kWh
 
-UPDATE_INTERVAL = timedelta(hours=1)
+UPDATE_INTERVAL = timedelta(days=1)
 
 # Tariff override fields (must match billing.Tariff field names)
 TARIFF_FIELDS = (
