@@ -10,7 +10,8 @@ bucket — robust against meter resets.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from homeassistant.components.recorder import get_instance, statistics
 from homeassistant.core import HomeAssistant
@@ -18,40 +19,55 @@ from homeassistant.core import HomeAssistant
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass
+class MeterUsage:
+    """Energy consumed in a window, plus the actual data coverage found."""
+
+    total: float          # summed hourly ``change`` over the window (kWh)
+    data_start: datetime  # start of the first statistics bucket that had data
+    data_end: datetime    # start of the last statistics bucket that had data
+
+
+def _to_dt(value) -> datetime:
+    """Normalise a statistics row 'start' (float seconds or datetime) to aware UTC."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return datetime.fromtimestamp(value, tz=timezone.utc)
+
+
 async def async_consumption_between(
     hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
-) -> float | None:
+) -> MeterUsage | None:
     """Energy consumed by ``statistic_id`` in [start, end), or None if no stats.
 
     For a Home-Assistant-recorded sensor the statistic id equals the entity id.
-    Returns the summed hourly ``change`` over the window. None means the source
-    has no long-term statistics covering the window (e.g. wrong sensor type, or
-    the period predates statistics collection).
+    Sums the hourly ``change`` over the window and also reports the first/last
+    bucket that actually had data, so callers can detect partial coverage (the
+    period starting before the meter's statistics began). None means the source
+    has no long-term statistics in the window at all.
     """
 
-    def _fetch() -> float | None:
+    def _fetch() -> MeterUsage | None:
         rows = statistics.statistics_during_period(
-            hass,
-            start,
-            end,
-            {statistic_id},
-            "hour",
-            None,
-            {"change"},
+            hass, start, end, {statistic_id}, "hour", None, {"change"}
         )
         series = rows.get(statistic_id)
         if not series:
             return None
         total = 0.0
-        seen = False
+        first = last = None
         for row in series:
             change = row.get("change")
-            if change is not None:
-                total += float(change)
-                seen = True
-        if not seen:
+            if change is None:
+                continue
+            total += float(change)
+            when = _to_dt(row["start"])
+            if first is None:
+                first = when
+            last = when
+        if first is None:
             return None
         # Guard against a net-negative window from a meter reset mid-period.
-        return max(0.0, total)
+        return MeterUsage(total=max(0.0, total), data_start=first, data_end=last)
 
     return await get_instance(hass).async_add_executor_job(_fetch)

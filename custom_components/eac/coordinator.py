@@ -44,6 +44,11 @@ class PeriodData:
         has_fuel: bool,
         fuel_source: str,
         prod_source: str,
+        consumption_entity: str,
+        export_entity: str | None,
+        data_start: str | None = None,
+        data_end: str | None = None,
+        coverage_complete: bool | None = None,
         error: str | None = None,
     ) -> None:
         self.bill = bill
@@ -53,6 +58,11 @@ class PeriodData:
         self.has_fuel = has_fuel
         self.fuel_source = fuel_source
         self.prod_source = prod_source
+        self.consumption_entity = consumption_entity
+        self.export_entity = export_entity
+        self.data_start = data_start
+        self.data_end = data_end
+        self.coverage_complete = coverage_complete
         self.error = error
 
 
@@ -113,6 +123,8 @@ class EacCoordinator(DataUpdateCoordinator):
                     has_fuel=False,
                     fuel_source="error",
                     prod_source="error",
+                    consumption_entity=self.consumption_entity,
+                    export_entity=self.export_entity,
                     error=str(err),
                 )
         return result
@@ -120,18 +132,15 @@ class EacCoordinator(DataUpdateCoordinator):
     async def _compute(self, period: dict, tariff: Tariff) -> PeriodData:
         start_dt, end_dt = _period_bounds(period[P_START], period[P_END])
 
-        gross = await async_consumption_between(
+        gross_usage = await async_consumption_between(
             self.hass, self.consumption_entity, start_dt, end_dt
         )
-
-        exported = 0.0
+        export_usage = None
         if self.export_entity:
-            exported = (
-                await async_consumption_between(
-                    self.hass, self.export_entity, start_dt, end_dt
-                )
-                or 0.0
+            export_usage = await async_consumption_between(
+                self.hass, self.export_entity, start_dt, end_dt
             )
+        exported = export_usage.total if export_usage else 0.0
 
         # Pick the rate month (default = end month of the period).
         end_date = dt_util.parse_date(period[P_END])
@@ -147,7 +156,7 @@ class EacCoordinator(DataUpdateCoordinator):
         )
         has_fuel = rates["fuel_c"] is not None
 
-        if gross is None:
+        if gross_usage is None:
             return PeriodData(
                 None,
                 start=period[P_START],
@@ -156,11 +165,30 @@ class EacCoordinator(DataUpdateCoordinator):
                 has_fuel=has_fuel,
                 fuel_source=rates["fuel_source"],
                 prod_source=rates["prod_source"],
-                error="no meter data",
+                consumption_entity=self.consumption_entity,
+                export_entity=self.export_entity,
+                coverage_complete=False,
+                error=(
+                    f"no long-term statistics for {self.consumption_entity} "
+                    f"in {period[P_START]}..{period[P_END]}"
+                ),
             )
 
+        # Detect partial coverage: statistics that begin after the period start
+        # mean the early part of the period was never recorded (under-counts).
+        complete = gross_usage.data_start <= start_dt + timedelta(hours=2)
+        error = None
+        if not complete:
+            local_first = dt_util.as_local(gross_usage.data_start)
+            error = (
+                f"PARTIAL: {self.consumption_entity} statistics begin "
+                f"{local_first:%Y-%m-%d %H:%M}, after period start {period[P_START]} "
+                f"— gross is under-counted"
+            )
+            _LOGGER.warning("EAC period '%s': %s", period.get(P_NAME), error)
+
         bill = calculate_bill(
-            gross,
+            gross_usage.total,
             exported,
             rates["fuel_c"] or 0.0,
             production_rate=rates["production"],
@@ -174,4 +202,10 @@ class EacCoordinator(DataUpdateCoordinator):
             has_fuel=has_fuel,
             fuel_source=rates["fuel_source"],
             prod_source=rates["prod_source"],
+            consumption_entity=self.consumption_entity,
+            export_entity=self.export_entity,
+            data_start=dt_util.as_local(gross_usage.data_start).isoformat(),
+            data_end=dt_util.as_local(gross_usage.data_end).isoformat(),
+            coverage_complete=complete,
+            error=error,
         )
