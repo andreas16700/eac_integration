@@ -1,0 +1,100 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "EAC bill",
+        "description": "Choose the cumulative energy meters (kWh).",
+        "data": {
+          "consumption_entity": "Energy consumption meter (grid import)",
+          "export_entity": "Energy export meter (optional)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "EAC configuration",
+        "menu_options": {
+          "add_period": "Add billing period",
+          "edit_select": "Edit billing period",
+          "remove_select": "Remove billing period",
+          "month_rates": "Monthly rates (production / fuel adjustment)",
+          "tariff": "Tariff charges"
+        }
+      },
+      "add_period": {
+        "title": "Add billing period",
+        "data": {
+          "name": "Name (e.g. Jan–Mar 2026)",
+          "start": "Period start",
+          "end": "Period end",
+          "rate_month": "Rate month YYYY-MM (blank = end month)"
+        }
+      },
+      "edit_select": {
+        "title": "Edit billing period",
+        "data": { "period": "Period" }
+      },
+      "edit_period": {
+        "title": "Edit billing period",
+        "data": {
+          "name": "Name",
+          "start": "Period start",
+          "end": "Period end",
+          "rate_month": "Rate month YYYY-MM (blank = end month)"
+        }
+      },
+      "remove_select": {
+        "title": "Remove billing period",
+        "data": { "period": "Period" }
+      },
+      "month_rates": {
+        "title": "Monthly rates",
+        "description": "Override the production and/or fuel-adjustment multipliers for one month (YYYY-MM). Leave both blank to clear an existing override. Fuel adjustment defaults to the bundled EAC table; production defaults to the tariff value.",
+        "data": {
+          "month": "Month (YYYY-MM)",
+          "fuel_c": "Fuel adjustment (¢/kWh)",
+          "production": "Production multiplier (€/kWh)"
+        }
+      },
+      "tariff": {
+        "title": "Tariff charges",
+        "description": "Per-unit and fixed charges. Network is municipality-specific. Production here is the default used when a month has no production override.",
+        "data": {
+          "generation": "Production / generation (€/kWh)",
+          "network": "Network use (€/kWh)",
+          "ancillary": "Ancillary services (€/kWh)",
+          "pso": "PSO (€/kWh)",
+          "res_fund": "RES & EE fund (€/kWh)",
+          "fixed_meter": "Metering data management (€)",
+          "fixed_supply": "Supply (€)",
+          "vat": "VAT (fraction, e.g. 0.05)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "total": { "name": "Total" },
+      "production": { "name": "Production" },
+      "network": { "name": "Network use" },
+      "ancillary": { "name": "Ancillary services" },
+      "meter_data": { "name": "Metering data management" },
+      "supply": { "name": "Supply" },
+      "subtotal_base": { "name": "Subtotal at base fuel price" },
+      "fuel_adjustment": { "name": "Fuel adjustment" },
+      "pso": { "name": "PSO" },
+      "subtotal_pre_vat": { "name": "Subtotal before VAT" },
+      "res_fund": { "name": "RES & EE fund" },
+      "subtotal_ex_vat": { "name": "Subtotal excl. VAT" },
+      "vat": { "name": "VAT" },
+      "gross_kwh": { "name": "Gross imported" },
+      "net_kwh": { "name": "Net imported" },
+      "exported_kwh": { "name": "Exported" },
+      "offset_kwh": { "name": "Net-metering offset" },
+      "fuel_rate_c": { "name": "Fuel adjustment rate" },
+      "production_rate": { "name": "Production rate" }
+    }
+  }
+}
