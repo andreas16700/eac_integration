@@ -9,7 +9,7 @@ refresh timer lingering past the test.
 """
 
 import pytest
-from homeassistant.config_entries import SOURCE_USER
+from homeassistant.config_entries import SOURCE_RECONFIGURE, SOURCE_USER
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -125,4 +125,42 @@ async def test_options_month_rates_and_tariff(recorder_mock, enable_custom_integ
     assert result["type"] == FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
     assert entry.options[CONF_TARIFF]["network"] == 0.03
+    await _unload(hass, entry.entry_id)
+
+
+async def test_reconfigure_changes_meter(recorder_mock, enable_custom_integrations, hass: HomeAssistant) -> None:
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id}
+    )
+    assert result["type"] == FlowResultType.FORM
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_CONSUMPTION: "sensor.grid_energy"}
+    )
+    assert result["type"] == FlowResultType.ABORT  # update_reload_and_abort
+    await hass.async_block_till_done()
+    assert entry.data[CONF_CONSUMPTION] == "sensor.grid_energy"
+    await _unload(hass, entry.entry_id)
+
+
+async def test_manual_override_period(recorder_mock, enable_custom_integrations, hass: HomeAssistant) -> None:
+    """A period with manual gross/export computes a bill without any statistics."""
+    entry = _entry(**{CONF_PERIODS: [{
+        "id": "p1", "name": "Jan-Mar 2026", "start": "2026-01-20", "end": "2026-03-12",
+        "manual_gross_kwh": 732.05, "manual_export_kwh": 56.01,
+    }]})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    total = hass.states.get("sensor.eac_jan_mar_2026_total")
+    assert total is not None and total.state not in ("unavailable", "unknown"), total
+    a = total.attributes
+    assert a["gross_imported_kwh"] == 732.05
+    assert abs(a["net_imported_kwh"] - 676.04) < 0.001
+    assert a["coverage_complete"] is True
     await _unload(hass, entry.entry_id)

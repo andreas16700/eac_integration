@@ -20,13 +20,15 @@ from .const import (
     DOMAIN,
     P_END,
     P_ID,
+    P_MANUAL_EXPORT,
+    P_MANUAL_GROSS,
     P_NAME,
     P_RATE_MONTH,
     P_START,
     UPDATE_INTERVAL,
 )
 from .rates import resolve_month_rates
-from .recorder_util import async_consumption_between
+from .recorder_util import MeterUsage, async_consumption_between
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -132,15 +134,23 @@ class EacCoordinator(DataUpdateCoordinator):
     async def _compute(self, period: dict, tariff: Tariff) -> PeriodData:
         start_dt, end_dt = _period_bounds(period[P_START], period[P_END])
 
-        gross_usage = await async_consumption_between(
-            self.hass, self.consumption_entity, start_dt, end_dt
-        )
-        export_usage = None
-        if self.export_entity:
-            export_usage = await async_consumption_between(
-                self.hass, self.export_entity, start_dt, end_dt
+        # Manual override: use entered kWh and skip statistics entirely.
+        manual = period.get(P_MANUAL_GROSS) is not None
+        if manual:
+            gross_usage = MeterUsage(
+                total=float(period[P_MANUAL_GROSS]), data_start=start_dt, data_end=end_dt
             )
-        exported = export_usage.total if export_usage else 0.0
+            exported = float(period.get(P_MANUAL_EXPORT) or 0.0)
+        else:
+            gross_usage = await async_consumption_between(
+                self.hass, self.consumption_entity, start_dt, end_dt
+            )
+            export_usage = None
+            if self.export_entity:
+                export_usage = await async_consumption_between(
+                    self.hass, self.export_entity, start_dt, end_dt
+                )
+            exported = export_usage.total if export_usage else 0.0
 
         # Pick the rate month (default = end month of the period).
         end_date = dt_util.parse_date(period[P_END])

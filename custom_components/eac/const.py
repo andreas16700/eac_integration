@@ -25,6 +25,8 @@ P_NAME = "name"
 P_START = "start"            # ISO date "YYYY-MM-DD"
 P_END = "end"               # ISO date "YYYY-MM-DD"
 P_RATE_MONTH = "rate_month"  # "YYYY-MM" used to pick fuel/production multipliers
+P_MANUAL_GROSS = "manual_gross_kwh"    # override: gross imported kWh (skip statistics)
+P_MANUAL_EXPORT = "manual_export_kwh"  # override: exported kWh (with manual gross)
 
 # Monthly-rate override dict keys
 M_FUEL_C = "fuel_c"          # fuel adjustment, ¢/kWh

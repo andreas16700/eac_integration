@@ -28,6 +28,8 @@ from .const import (
     M_PRODUCTION,
     P_END,
     P_ID,
+    P_MANUAL_EXPORT,
+    P_MANUAL_GROSS,
     P_NAME,
     P_RATE_MONTH,
     P_START,
@@ -75,6 +77,31 @@ class EacConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change the source meters without removing the integration."""
+        entry = self._get_reconfigure_entry()
+        if user_input is not None:
+            data = {CONF_CONSUMPTION: user_input[CONF_CONSUMPTION]}
+            if user_input.get(CONF_EXPORT):
+                data[CONF_EXPORT] = user_input[CONF_EXPORT]
+            return self.async_update_reload_and_abort(entry, data=data)
+
+        cur = entry.data
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_CONSUMPTION,
+                    description={"suggested_value": cur.get(CONF_CONSUMPTION)},
+                ): _ENERGY_SELECTOR,
+                vol.Optional(
+                    CONF_EXPORT, description={"suggested_value": cur.get(CONF_EXPORT)}
+                ): _ENERGY_SELECTOR,
+            }
+        )
+        return self.async_show_form(step_id="reconfigure", data_schema=schema)
 
     @staticmethod
     @callback
@@ -129,8 +156,28 @@ class EacOptionsFlow(OptionsFlow):
                 vol.Optional(
                     P_RATE_MONTH, description={"suggested_value": d.get(P_RATE_MONTH)}
                 ): selector.TextSelector(),  # "YYYY-MM"; blank = period end month
+                vol.Optional(
+                    P_MANUAL_GROSS, description={"suggested_value": d.get(P_MANUAL_GROSS)}
+                ): _number(),  # override gross imported kWh (skips statistics)
+                vol.Optional(
+                    P_MANUAL_EXPORT, description={"suggested_value": d.get(P_MANUAL_EXPORT)}
+                ): _number(),  # exported kWh, used with manual gross
             }
         )
+
+    @staticmethod
+    def _apply_optional(period: dict, user_input: dict) -> None:
+        """Copy optional period fields (rate month, manual kWh) into the period."""
+        rm = (user_input.get(P_RATE_MONTH) or "").strip()
+        if rm:
+            period[P_RATE_MONTH] = rm
+        else:
+            period.pop(P_RATE_MONTH, None)
+        for key in (P_MANUAL_GROSS, P_MANUAL_EXPORT):
+            if user_input.get(key) is not None:
+                period[key] = float(user_input[key])
+            else:
+                period.pop(key, None)
 
     async def async_step_add_period(
         self, user_input: dict[str, Any] | None = None
@@ -142,8 +189,7 @@ class EacOptionsFlow(OptionsFlow):
                 P_START: user_input[P_START],
                 P_END: user_input[P_END],
             }
-            if user_input.get(P_RATE_MONTH):
-                period[P_RATE_MONTH] = user_input[P_RATE_MONTH].strip()
+            self._apply_optional(period, user_input)
             self._periods.append(period)
             return self._save()
         return self.async_show_form(step_id="add_period", data_schema=self._period_schema())
@@ -173,11 +219,7 @@ class EacOptionsFlow(OptionsFlow):
             current[P_NAME] = user_input[P_NAME]
             current[P_START] = user_input[P_START]
             current[P_END] = user_input[P_END]
-            rm = (user_input.get(P_RATE_MONTH) or "").strip()
-            if rm:
-                current[P_RATE_MONTH] = rm
-            else:
-                current.pop(P_RATE_MONTH, None)
+            self._apply_optional(current, user_input)
             return self._save()
         return self.async_show_form(
             step_id="edit_period", data_schema=self._period_schema(current)
