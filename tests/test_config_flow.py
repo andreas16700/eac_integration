@@ -12,6 +12,7 @@ import pytest
 from homeassistant.config_entries import SOURCE_RECONFIGURE, SOURCE_USER
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.eac.const import (
@@ -163,4 +164,37 @@ async def test_manual_override_period(recorder_mock, enable_custom_integrations,
     assert a["gross_imported_kwh"] == 732.05
     assert abs(a["net_imported_kwh"] - 676.04) < 0.001
     assert a["coverage_complete"] is True
+    await _unload(hass, entry.entry_id)
+
+
+async def test_current_period(recorder_mock, enable_custom_integrations, hass: HomeAssistant) -> None:
+    """A current period is auto-added, starting at the latest configured end."""
+    entry = _entry(**{CONF_PERIODS: [
+        {"id": "p1", "name": "P1", "start": "2025-11-20", "end": "2026-01-12"},
+        {"id": "p2", "name": "P2", "start": "2026-01-20", "end": "2026-03-12"},
+    ]})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = hass.data[DOMAIN][entry.entry_id]
+    current = coord._current_period()
+    assert current is not None
+    assert current["start"] == "2026-03-12"  # latest configured end
+    assert current["end"] == dt_util.now().date().isoformat()  # today
+    # its sensors exist
+    assert hass.states.get("sensor.eac_current_total") is not None
+    await _unload(hass, entry.entry_id)
+
+
+async def test_no_current_period_without_periods(recorder_mock, enable_custom_integrations, hass: HomeAssistant) -> None:
+    entry = _entry()  # no configured periods
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coord = hass.data[DOMAIN][entry.entry_id]
+    assert coord._current_period() is None
+    assert coord.all_periods() == []
+    assert hass.states.get("sensor.eac_current_total") is None
     await _unload(hass, entry.entry_id)

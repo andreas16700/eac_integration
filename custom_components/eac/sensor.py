@@ -13,7 +13,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, EUR, KWH, P_ID, P_NAME, RATE_UNIT, SENSOR_FIELDS
+from .const import CURRENT_ID, DOMAIN, EUR, KWH, P_ID, P_NAME, RATE_UNIT, SENSOR_FIELDS
 from .coordinator import EacCoordinator, PeriodData
 
 PRODUCTION_RATE_UNIT = "€/kWh"
@@ -59,7 +59,7 @@ async def async_setup_entry(
     """Create line-item sensors for every configured billing period."""
     coordinator: EacCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[EacBillSensor] = []
-    for period in coordinator.periods:
+    for period in coordinator.all_periods():
         for key, kind in SENSOR_FIELDS:
             entities.append(
                 EacBillSensor(coordinator, entry, period, _description(key, kind), kind)
@@ -123,6 +123,7 @@ class EacBillSensor(CoordinatorEntity[EacCoordinator], SensorEntity):
             return None
         bill = data.bill
         return {
+            "is_current_period": self._period_id == CURRENT_ID,
             "period_start": data.start,
             "period_end": data.end,
             "rate_month": data.rate_month,

@@ -17,6 +17,8 @@ from .const import (
     CONF_MONTH_RATES,
     CONF_PERIODS,
     CONF_TARIFF,
+    CURRENT_ID,
+    CURRENT_NAME,
     DOMAIN,
     P_END,
     P_ID,
@@ -100,6 +102,34 @@ class EacCoordinator(DataUpdateCoordinator):
     def periods(self) -> list[dict]:
         return self.entry.options.get(CONF_PERIODS, [])
 
+    def _current_period(self) -> dict | None:
+        """Synthetic ongoing period: start = latest configured end, end = today.
+
+        Returns None when no periods are configured, or when the latest end is in
+        the future (no sensible ongoing window yet).
+        """
+        ends = [p[P_END] for p in self.periods if p.get(P_END)]
+        if not ends:
+            return None
+        start = max(ends)  # ISO dates sort chronologically
+        today = dt_util.now().date()
+        if dt_util.parse_date(start) > today:
+            return None
+        return {
+            P_ID: CURRENT_ID,
+            P_NAME: CURRENT_NAME,
+            P_START: start,
+            P_END: today.isoformat(),
+        }
+
+    def all_periods(self) -> list[dict]:
+        """Configured periods plus the auto-maintained current period (if any)."""
+        periods = list(self.periods)
+        current = self._current_period()
+        if current:
+            periods.append(current)
+        return periods
+
     @property
     def month_rates(self) -> dict:
         return self.entry.options.get(CONF_MONTH_RATES, {})
@@ -110,7 +140,7 @@ class EacCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict[str, PeriodData]:
         tariff = self.tariff()
         result: dict[str, PeriodData] = {}
-        for period in self.periods:
+        for period in self.all_periods():
             try:
                 result[period[P_ID]] = await self._compute(period, tariff)
             except Exception as err:  # noqa: BLE001 — never let one period break the rest
