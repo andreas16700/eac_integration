@@ -71,3 +71,25 @@ async def async_consumption_between(
         return MeterUsage(total=max(0.0, total), data_start=first, data_end=last)
 
     return await get_instance(hass).async_add_executor_job(_fetch)
+
+
+async def async_daily_changes(
+    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
+) -> list[tuple[datetime, float]]:
+    """Per-local-day energy change for ``statistic_id`` in [start, end).
+
+    Returns a list of (day_start_utc, change_kwh), one per day that has data.
+    """
+
+    def _fetch() -> list[tuple[datetime, float]]:
+        rows = statistics.statistics_during_period(
+            hass, start, end, {statistic_id}, "day", None, {"change"}
+        )
+        out: list[tuple[datetime, float]] = []
+        for row in rows.get(statistic_id) or []:
+            change = row.get("change")
+            if change is not None:
+                out.append((_to_dt(row["start"]), float(change)))
+        return out
+
+    return await get_instance(hass).async_add_executor_job(_fetch)

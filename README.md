@@ -46,6 +46,19 @@ Billing rules (matching real EAC net-metering bills):
 The `total` sensor carries the period metadata as attributes (start/end, rate
 month, fuel/production rate + source, gross/net/exported kWh).
 
+### Current period & daily history
+
+When at least one period is configured, a **Current** period device is added
+automatically: its start = the latest configured period's end, its end = today
+(`is_current_period: true` on its total). Values recompute **once per day**.
+
+For the current period the integration also publishes **daily statistics**
+(`eac:current_total`, `eac:current_gross_kwh`, …): for every day from the period
+start up to today, the bill is computed **as of the end of that day**. These are
+derived statistics (not tied to the live sensors), so the current period has a
+full daily history immediately — view them in History/Statistics or add them to
+a dashboard. They are recomputed and re-published on each daily refresh.
+
 ## Rates
 
 The **fuel adjustment** and **production** multipliers are *monthly* values. A

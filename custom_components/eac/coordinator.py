@@ -5,6 +5,12 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
+from homeassistant.components.recorder.models import (
+    StatisticData,
+    StatisticMeanType,
+    StatisticMetaData,
+)
+from homeassistant.components.recorder.statistics import async_add_external_statistics
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -20,6 +26,8 @@ from .const import (
     CURRENT_ID,
     CURRENT_NAME,
     DOMAIN,
+    EUR,
+    KWH,
     P_END,
     P_ID,
     P_MANUAL_EXPORT,
@@ -27,10 +35,22 @@ from .const import (
     P_NAME,
     P_RATE_MONTH,
     P_START,
+    SENSOR_FIELDS,
     UPDATE_INTERVAL,
 )
 from .rates import resolve_month_rates
-from .recorder_util import MeterUsage, async_consumption_between
+from .recorder_util import (
+    MeterUsage,
+    async_consumption_between,
+    async_daily_changes,
+)
+
+# Bill line items worth a daily history (cumulative over the period).
+_CUMULATIVE = {
+    key: (EUR if kind == "money" else KWH)
+    for key, kind in SENSOR_FIELDS
+    if kind in ("money", "energy")
+}
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -159,7 +179,76 @@ class EacCoordinator(DataUpdateCoordinator):
                     export_entity=self.export_entity,
                     error=str(err),
                 )
+        try:
+            await self._publish_current_daily(tariff)
+        except Exception as err:  # noqa: BLE001 — stats are best-effort
+            _LOGGER.warning("EAC: current-period daily statistics failed: %s", err)
         return result
+
+    async def _publish_current_daily(self, tariff: Tariff) -> None:
+        """Publish derived daily statistics (``eac:current_*``) for the current period.
+
+        For each day from the period start up to today, compute the bill through the
+        END of that day and store it as an external statistic. Gives the current
+        period a full daily history (not just from install time). Idempotent — the
+        whole series is recomputed and re-imported each (daily) refresh.
+        """
+        current = self._current_period()
+        if not current:
+            return
+        start_dt, end_dt = _period_bounds(current[P_START], current[P_END])
+        cons = await async_daily_changes(self.hass, self.consumption_entity, start_dt, end_dt)
+        if not cons:
+            return
+        exp: dict[datetime, float] = {}
+        if self.export_entity:
+            exp = dict(
+                await async_daily_changes(self.hass, self.export_entity, start_dt, end_dt)
+            )
+
+        ed = dt_util.parse_date(current[P_END])
+        rates = resolve_month_rates(ed.year, ed.month, self.month_rates, tariff.generation)
+        if rates["fuel_c"] is None:
+            return
+
+        # Cumulative bill at the end of each day.
+        gross = exported = 0.0
+        series: list[tuple[datetime, BillResult]] = []
+        for day_start, change in cons:
+            gross += change
+            exported += exp.get(day_start, 0.0)
+            series.append(
+                (
+                    day_start,
+                    calculate_bill(
+                        gross,
+                        exported,
+                        rates["fuel_c"],
+                        production_rate=rates["production"],
+                        tariff=tariff,
+                    ),
+                )
+            )
+
+        for key, unit in _CUMULATIVE.items():
+            first = getattr(series[0][1], key)
+            rows = [
+                StatisticData(
+                    start=day, state=getattr(bill, key), sum=getattr(bill, key) - first
+                )
+                for day, bill in series
+            ]
+            meta = StatisticMetaData(
+                mean_type=StatisticMeanType.NONE,
+                has_mean=False,
+                has_sum=True,
+                name=f"EAC Current {key.replace('_', ' ').title()}",
+                source=DOMAIN,
+                statistic_id=f"{DOMAIN}:current_{key}",
+                unit_of_measurement=unit,
+                unit_class="energy" if unit == KWH else None,
+            )
+            async_add_external_statistics(self.hass, meta, rows)
 
     async def _compute(self, period: dict, tariff: Tariff) -> PeriodData:
         start_dt, end_dt = _period_bounds(period[P_START], period[P_END])

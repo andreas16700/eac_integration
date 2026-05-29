@@ -8,12 +8,29 @@ loading the config flow needs it) and unloads the entry to avoid the coordinator
 refresh timer lingering past the test.
 """
 
+from datetime import timedelta
+
 import pytest
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.models import (
+    StatisticData,
+    StatisticMeanType,
+    StatisticMetaData,
+)
+from homeassistant.components.recorder.statistics import (
+    async_import_statistics,
+    statistics_during_period,
+)
 from homeassistant.config_entries import SOURCE_RECONFIGURE, SOURCE_USER
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.components.recorder.common import (
+    async_wait_recording_done,
+)
+
+from custom_components.eac.billing import calculate_bill
 
 from custom_components.eac.const import (
     CONF_CONSUMPTION,
@@ -197,4 +214,49 @@ async def test_no_current_period_without_periods(recorder_mock, enable_custom_in
     assert coord._current_period() is None
     assert coord.all_periods() == []
     assert hass.states.get("sensor.eac_current_total") is None
+    await _unload(hass, entry.entry_id)
+
+
+async def test_current_daily_statistics(recorder_mock, enable_custom_integrations, hass: HomeAssistant) -> None:
+    """The current period publishes a daily eac:current_total series matching end-of-day bills."""
+    now = dt_util.now()
+    start_date = (now - timedelta(days=3)).date()  # current period start
+    base = dt_util.start_of_local_day(start_date)
+
+    # Inject 72h of source statistics: +1 kWh/hour => 24 kWh/day, for 3 full days.
+    rows = [
+        StatisticData(start=base + timedelta(hours=i), state=float(i + 1), sum=float(i + 1))
+        for i in range(72)
+    ]
+    meta = StatisticMetaData(
+        mean_type=StatisticMeanType.NONE, has_mean=False, has_sum=True, name=None,
+        source="recorder", statistic_id="sensor.grid_import", unit_of_measurement="kWh",
+        unit_class="energy",
+    )
+    async_import_statistics(hass, meta, rows)
+    await async_wait_recording_done(hass)
+
+    entry = _entry(**{CONF_PERIODS: [{
+        "id": "prev", "name": "prev",
+        "start": (start_date - timedelta(days=30)).isoformat(),
+        "end": start_date.isoformat(),
+    }]})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await async_wait_recording_done(hass)
+
+    stats = await get_instance(hass).async_add_executor_job(
+        statistics_during_period, hass, base - timedelta(days=1), now + timedelta(days=1),
+        {"eac:current_total"}, "day", None, {"state"},
+    )
+    series = stats.get("eac:current_total") or []
+    assert len(series) >= 2, series
+    states = [r["state"] for r in series]
+    assert states == sorted(states)  # monotonically increasing
+    # 2nd day's cumulative gross = 48 kWh; rate month = current month (bundled).
+    from custom_components.eac.rates import bundled_fuel_rate
+    fuel_c, _ = bundled_fuel_rate(now.year, now.month)
+    expected = calculate_bill(48, 0.0, fuel_c, production_rate=0.1789).total
+    assert abs(states[1] - expected) < 0.05, (states[1], expected)
     await _unload(hass, entry.entry_id)
