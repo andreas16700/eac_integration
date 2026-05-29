@@ -10,9 +10,10 @@ from homeassistant.components.recorder.models import (
     StatisticMeanType,
     StatisticMetaData,
 )
-from homeassistant.components.recorder.statistics import async_add_external_statistics
+from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -186,12 +187,13 @@ class EacCoordinator(DataUpdateCoordinator):
         return result
 
     async def _publish_current_daily(self, tariff: Tariff) -> None:
-        """Publish derived daily statistics (``eac:current_*``) for the current period.
+        """Backfill each current-period bill sensor with a value for every day.
 
-        For each day from the period start up to today, compute the bill through the
-        END of that day and store it as an external statistic. Gives the current
-        period a full daily history (not just from install time). Idempotent — the
-        whole series is recomputed and re-imported each (daily) refresh.
+        For each day from the period start up to today, compute the bill through
+        the END of that day and write it as the sensor's own long-term statistic
+        (statistic id = the sensor's entity id). So the bill sensors are populated
+        for all days of the period, visible in each sensor's History. Idempotent —
+        the whole series is recomputed and re-imported on each (daily) refresh.
         """
         current = self._current_period()
         if not current:
@@ -230,11 +232,20 @@ class EacCoordinator(DataUpdateCoordinator):
                 )
             )
 
+        registry = er.async_get(self.hass)
         for key, unit in _CUMULATIVE.items():
+            stat_id = registry.async_get_entity_id(
+                "sensor", DOMAIN, f"{self.entry.entry_id}_{CURRENT_ID}_{key}"
+            )
+            if not stat_id:
+                continue  # entity not registered yet; picked up on next refresh
             first = getattr(series[0][1], key)
             rows = [
                 StatisticData(
-                    start=day, state=getattr(bill, key), sum=getattr(bill, key) - first
+                    start=day,
+                    state=getattr(bill, key),
+                    sum=getattr(bill, key) - first,
+                    last_reset=start_dt,
                 )
                 for day, bill in series
             ]
@@ -242,13 +253,13 @@ class EacCoordinator(DataUpdateCoordinator):
                 mean_type=StatisticMeanType.NONE,
                 has_mean=False,
                 has_sum=True,
-                name=f"EAC Current {key.replace('_', ' ').title()}",
-                source=DOMAIN,
-                statistic_id=f"{DOMAIN}:current_{key}",
+                name=None,
+                source="recorder",
+                statistic_id=stat_id,
                 unit_of_measurement=unit,
                 unit_class="energy" if unit == KWH else None,
             )
-            async_add_external_statistics(self.hass, meta, rows)
+            async_import_statistics(self.hass, meta, rows)
 
     async def _compute(self, period: dict, tariff: Tariff) -> PeriodData:
         start_dt, end_dt = _period_bounds(period[P_START], period[P_END])

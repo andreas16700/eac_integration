@@ -248,9 +248,9 @@ async def test_current_daily_statistics(recorder_mock, enable_custom_integration
 
     stats = await get_instance(hass).async_add_executor_job(
         statistics_during_period, hass, base - timedelta(days=1), now + timedelta(days=1),
-        {"eac:current_total"}, "day", None, {"state"},
+        {"sensor.eac_current_total"}, "day", None, {"state"},
     )
-    series = stats.get("eac:current_total") or []
+    series = stats.get("sensor.eac_current_total") or []
     assert len(series) >= 2, series
     states = [r["state"] for r in series]
     assert states == sorted(states)  # monotonically increasing

@@ -6,6 +6,7 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -25,6 +26,7 @@ def _description(key: str, kind: str) -> SensorEntityDescription:
             key=key,
             translation_key=key,
             device_class=SensorDeviceClass.MONETARY,
+            state_class=SensorStateClass.TOTAL,
             native_unit_of_measurement=EUR,
             suggested_display_precision=2,
         )
@@ -33,6 +35,7 @@ def _description(key: str, kind: str) -> SensorEntityDescription:
             key=key,
             translation_key=key,
             device_class=SensorDeviceClass.ENERGY,
+            state_class=SensorStateClass.TOTAL,
             native_unit_of_measurement=KWH,
             suggested_display_precision=2,
         )
@@ -40,12 +43,14 @@ def _description(key: str, kind: str) -> SensorEntityDescription:
         return SensorEntityDescription(
             key=key,
             translation_key=key,
+            state_class=SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=PRODUCTION_RATE_UNIT,
             suggested_display_precision=4,
         )
     return SensorEntityDescription(  # "rate" (fuel adjustment ¢/kWh)
         key=key,
         translation_key=key,
+        state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=RATE_UNIT,
         suggested_display_precision=4,
     )
