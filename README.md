@@ -13,6 +13,13 @@ Inputs (config flow):
 - **Energy consumption meter** — cumulative grid import (kWh). Required.
 - **Energy export meter** — cumulative grid export (kWh). Optional.
 
+> **Requirement:** the meter sensors must have a `state_class` of `total` or
+> `total_increasing` (i.e. normal energy meters) so Home Assistant keeps
+> **long-term statistics** for them. The integration reads those statistics —
+> not raw history — so it works for billing periods far in the past (raw states
+> are purged after ~10 days, statistics are kept indefinitely). The recorder
+> integration must be enabled (it is, by default).
+
 For each billing period the integration reads the meters at the period start and
 end (from the recorder) to get the energy used:
 

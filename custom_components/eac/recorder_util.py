@@ -1,48 +1,57 @@
-"""Helpers for reading a cumulative meter's value at a point in time."""
+"""Read energy consumed by a meter over a period, via long-term statistics.
+
+We deliberately use **long-term statistics** rather than raw recorder states:
+raw states are purged (default ~10 days), so a historical billing period would
+have no data. Statistics for energy meters (state_class total/total_increasing)
+are kept indefinitely, and the ``change`` type gives the energy consumed in each
+bucket — robust against meter resets.
+"""
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from homeassistant.components.recorder import get_instance, history
+from homeassistant.components.recorder import get_instance, statistics
 from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
-# How far back to look for the last known state at/just before `when`.
-_LOOKBACK = timedelta(days=7)
-_INVALID = {None, "", "unknown", "unavailable"}
 
-
-async def async_get_reading_at(
-    hass: HomeAssistant, entity_id: str, when: datetime
+async def async_consumption_between(
+    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
 ) -> float | None:
-    """Return the meter reading (float) at or just before ``when``.
+    """Energy consumed by ``statistic_id`` in [start, end), or None if no stats.
 
-    Queries the recorder for the entity's states in a window ending at ``when``
-    and returns the most recent valid numeric state. Returns None if no usable
-    state exists (e.g. recorder has no history that far back).
+    For a Home-Assistant-recorded sensor the statistic id equals the entity id.
+    Returns the summed hourly ``change`` over the window. None means the source
+    has no long-term statistics covering the window (e.g. wrong sensor type, or
+    the period predates statistics collection).
     """
 
     def _fetch() -> float | None:
-        window_start = when - _LOOKBACK
-        result = history.state_changes_during_period(
+        rows = statistics.statistics_during_period(
             hass,
-            window_start,
-            when,
-            entity_id,
-            no_attributes=True,
-            include_start_time_state=True,
+            start,
+            end,
+            {statistic_id},
+            "hour",
+            None,
+            {"change"},
         )
-        states = result.get(entity_id) or []
-        for state in reversed(states):
-            if state.state in _INVALID:
-                continue
-            try:
-                return float(state.state)
-            except (ValueError, TypeError):
-                continue
-        return None
+        series = rows.get(statistic_id)
+        if not series:
+            return None
+        total = 0.0
+        seen = False
+        for row in series:
+            change = row.get("change")
+            if change is not None:
+                total += float(change)
+                seen = True
+        if not seen:
+            return None
+        # Guard against a net-negative window from a meter reset mid-period.
+        return max(0.0, total)
 
     return await get_instance(hass).async_add_executor_job(_fetch)

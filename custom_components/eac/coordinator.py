@@ -19,7 +19,6 @@ from .const import (
     CONF_TARIFF,
     DOMAIN,
     P_END,
-    P_FUEL_OVERRIDE,
     P_ID,
     P_NAME,
     P_RATE_MONTH,
@@ -27,7 +26,7 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .rates import resolve_month_rates
-from .recorder_util import async_get_reading_at
+from .recorder_util import async_consumption_between
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,23 +63,16 @@ def _period_bounds(start_str: str, end_str: str) -> tuple[datetime, datetime]:
     return start, end
 
 
-def _delta(start_val: float | None, end_val: float | None) -> float | None:
-    if start_val is None or end_val is None:
-        return None
-    diff = end_val - start_val
-    if diff < 0:
-        # meter reset within the period: best-effort assume end value is the total
-        _LOGGER.debug("EAC: meter decreased (%.3f→%.3f); assuming reset", start_val, end_val)
-        return max(0.0, end_val)
-    return diff
-
-
 class EacCoordinator(DataUpdateCoordinator):
     """Reads the meters and computes a bill for each billing period."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(
-            hass, _LOGGER, name=DOMAIN, update_interval=UPDATE_INTERVAL
+            hass,
+            _LOGGER,
+            name=DOMAIN,
+            update_interval=UPDATE_INTERVAL,
+            config_entry=entry,
         )
         self.entry = entry
 
@@ -128,15 +120,18 @@ class EacCoordinator(DataUpdateCoordinator):
     async def _compute(self, period: dict, tariff: Tariff) -> PeriodData:
         start_dt, end_dt = _period_bounds(period[P_START], period[P_END])
 
-        c0 = await async_get_reading_at(self.hass, self.consumption_entity, start_dt)
-        c1 = await async_get_reading_at(self.hass, self.consumption_entity, end_dt)
-        gross = _delta(c0, c1)
+        gross = await async_consumption_between(
+            self.hass, self.consumption_entity, start_dt, end_dt
+        )
 
         exported = 0.0
         if self.export_entity:
-            e0 = await async_get_reading_at(self.hass, self.export_entity, start_dt)
-            e1 = await async_get_reading_at(self.hass, self.export_entity, end_dt)
-            exported = _delta(e0, e1) or 0.0
+            exported = (
+                await async_consumption_between(
+                    self.hass, self.export_entity, start_dt, end_dt
+                )
+                or 0.0
+            )
 
         # Pick the rate month (default = end month of the period).
         end_date = dt_util.parse_date(period[P_END])
@@ -150,12 +145,6 @@ class EacCoordinator(DataUpdateCoordinator):
         rates = resolve_month_rates(
             rate_year, rate_month, self.month_rates, tariff.generation
         )
-
-        # A legacy per-period fuel override (P_FUEL_OVERRIDE) still wins if set.
-        if period.get(P_FUEL_OVERRIDE) is not None:
-            rates["fuel_c"] = float(period[P_FUEL_OVERRIDE])
-            rates["fuel_source"] = "override"
-
         has_fuel = rates["fuel_c"] is not None
 
         if gross is None:

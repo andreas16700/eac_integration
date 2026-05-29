@@ -42,9 +42,11 @@ _DATE_SELECTOR = selector.DateSelector()
 _TEXT_SELECTOR = selector.TextSelector()
 
 
-def _number(step: float = 0.0001) -> selector.NumberSelector:
+def _number() -> selector.NumberSelector:
+    # step="any" allows the precision EAC rates need (e.g. 0.00051, 0.1789);
+    # numeric steps below 0.001 are rejected by the selector schema.
     return selector.NumberSelector(
-        selector.NumberSelectorConfig(min=0, step=step, mode=selector.NumberSelectorMode.BOX)
+        selector.NumberSelectorConfig(min=0, step="any", mode=selector.NumberSelectorMode.BOX)
     )
 
 
@@ -217,8 +219,8 @@ class EacOptionsFlow(OptionsFlow):
         schema = vol.Schema(
             {
                 vol.Required("month"): _TEXT_SELECTOR,  # "YYYY-MM"
-                vol.Optional(M_FUEL_C): _number(0.0001),
-                vol.Optional(M_PRODUCTION): _number(0.0001),
+                vol.Optional(M_FUEL_C): _number(),
+                vol.Optional(M_PRODUCTION): _number(),
             }
         )
         return self.async_show_form(step_id="month_rates", data_schema=schema)
@@ -237,5 +239,5 @@ class EacOptionsFlow(OptionsFlow):
             current = self._tariff.get(name, getattr(defaults, name))
             fields[
                 vol.Optional(name, description={"suggested_value": current})
-            ] = _number(0.00001)
+            ] = _number()
         return self.async_show_form(step_id="tariff", data_schema=vol.Schema(fields))
