@@ -73,10 +73,13 @@ def stat_meta(cur, sid):
 
 
 def reading_at(cur, mid, ts):
+    """Meter reading AT ``ts`` = state of the last bucket ENDING at/before ts,
+    i.e. the bucket starting strictly before ts (its `state` is the end-of-bucket
+    reading). This is the reading at the period start — the offset."""
     if mid is None:
         return None
     for tbl in ("statistics", "statistics_short_term"):
-        cur.execute(f"SELECT state FROM {tbl} WHERE metadata_id=%s AND start_ts<=%s "
+        cur.execute(f"SELECT state FROM {tbl} WHERE metadata_id=%s AND start_ts<%s "
                     "AND state IS NOT NULL ORDER BY start_ts DESC LIMIT 1", (mid, ts))
         r = cur.fetchone()
         if r:
@@ -95,6 +98,10 @@ def series_5m(cur, mid, lo, hi):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since-hours", type=float, default=1.0)
+    ap.add_argument("--whole-period", action="store_true",
+                    help="window = from the period start")
+    ap.add_argument("--this-month", action="store_true",
+                    help="window = from the 1st of the current month")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -105,7 +112,14 @@ def main():
     now = dt.datetime.now(TZ)
     rate_month = f"{now.year:04d}-{now.month:02d}"
     fuel_c, prod = fuel_and_prod(cfg, rate_month)
-    lo = (now - dt.timedelta(hours=args.since_hours)).timestamp()
+    # The offsets are always the readings at the PERIOD start (the bill accumulates
+    # from there); only the window to write differs.
+    if args.whole_period:
+        lo = ps_ts
+    elif args.this_month:
+        lo = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+    else:
+        lo = (now - dt.timedelta(hours=args.since_hours)).timestamp()
     hi = now.timestamp() + 1
 
     conn = db_conn(); cur = conn.cursor()
@@ -142,28 +156,37 @@ def main():
         cons_series, exp_series, fuel_c, prod, cfg["tariff"], gbase=base_g, ebase=base_e
     )
 
-    # Idempotent UPSERT at the exact grid timestamp: update the row there if it
-    # exists (corrects stale/spike points), else insert. Re-running converges.
-    preview, upserted = [], 0
-    for ts, bill in points:
-        preview.append((ts, bill.total, bill.gross_kwh, bill.net_kwh))
-        for attr, suffix in MAP.items():
-            if suffix not in meta:
-                continue
-            mid, aid = meta[suffix]
+    preview = [(ts, b.total, b.gross_kwh, b.net_kwh) for ts, b in points]
+
+    # Idempotent UPSERT, batched per sensor: split grid points into those whose
+    # exact aligned timestamp already exists (UPDATE in place — corrects stale/
+    # spike points) vs new (INSERT). executemany keeps the whole-period run fast.
+    INS = ("INSERT INTO states (metadata_id,state,attributes_id,last_updated_ts,"
+           "last_changed_ts,last_reported_ts,origin_idx) VALUES (%s,%s,%s,%s,%s,%s,0)")
+    UPD = ("UPDATE states SET state=%s, attributes_id=%s, last_changed_ts=%s, "
+           "last_reported_ts=%s WHERE metadata_id=%s AND last_updated_ts=%s")
+    upserted = 0
+    for attr, suffix in MAP.items():
+        if suffix not in meta:
+            continue
+        mid, aid = meta[suffix]
+        cur.execute("SELECT last_updated_ts FROM states WHERE metadata_id=%s "
+                    "AND last_updated_ts>=%s AND last_updated_ts<=%s", (mid, lo, hi))
+        existing = {int(round(x[0])) for x in cur.fetchall() if x[0] is not None}
+        ins, upd = [], []
+        for ts, bill in points:
             val = f"{getattr(bill, attr):.4f}"
-            if not args.dry_run:
-                n = cur.execute(
-                    "UPDATE states SET state=%s, attributes_id=%s, last_changed_ts=%s, "
-                    "last_reported_ts=%s WHERE metadata_id=%s AND last_updated_ts=%s",
-                    (val, aid, ts, ts, mid, ts))
-                if n == 0:
-                    cur.execute(
-                        "INSERT INTO states (metadata_id,state,attributes_id,last_updated_ts,"
-                        "last_changed_ts,last_reported_ts,origin_idx) VALUES (%s,%s,%s,%s,%s,%s,0)",
-                        (mid, val, aid, ts, ts, ts))
-            if suffix == "total":
-                upserted += 1
+            if ts in existing:
+                upd.append((val, aid, ts, ts, mid, ts))
+            else:
+                ins.append((mid, val, aid, ts, ts, ts))
+        if not args.dry_run:
+            if ins:
+                cur.executemany(INS, ins)
+            if upd:
+                cur.executemany(UPD, upd)
+        if suffix == "total":
+            upserted = len(ins) + len(upd)
 
     print(f"\n{len(cons)} 5-min points. Sample (ts, total€, gross, net):")
     for ts, tot, g, n in preview[:3] + preview[-3:]:
