@@ -64,10 +64,13 @@ def _insert(rec, entity_id: str, points: list[tuple[datetime, float]], attribute
             session.flush()
         metadata_id = meta.metadata_id
 
-        lo = points[0][0].timestamp() - 1
-        hi = points[-1][0].timestamp() + 1
+        lo = points[0][0].timestamp() - 300
+        hi = points[-1][0].timestamp() + 300
+        # Dedup by 5-minute bucket: skip a point if ANY state already exists in
+        # its 5-minute slot — so the backfill fills empty slots (the gap) without
+        # duplicating live states that already cover their slot.
         existing = {
-            round(ts, 0)
+            int(ts // 300)
             for (ts,) in session.query(States.last_updated_ts)
             .filter(
                 States.metadata_id == metadata_id,
@@ -96,7 +99,7 @@ def _insert(rec, entity_id: str, points: list[tuple[datetime, float]], attribute
         written = 0
         for when, value in points:
             ts = when.timestamp()
-            if round(ts, 0) in existing:
+            if int(ts // 300) in existing:
                 continue
             session.add(
                 States(

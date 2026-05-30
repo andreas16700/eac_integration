@@ -263,6 +263,32 @@ class EacCoordinator(DataUpdateCoordinator):
         if not day_series and not hour_series:
             return
 
+        # 5-minute series for TODAY — used for the STATE backfill (the History tab
+        # renders states; today is wanted at 5-minute resolution, not hourly).
+        cons5 = await async_state_series(
+            self.hass, self.consumption_entity, today_start, end_dt, "5minute"
+        )
+        exp5: dict[datetime, float] = {}
+        if self.export_entity:
+            exp5 = {
+                t: s
+                for t, s, _ in await async_state_series(
+                    self.hass, self.export_entity, today_start, end_dt, "5minute"
+                )
+            }
+        prev_e5: float | None = None
+        min5_series: list[tuple[datetime, BillResult]] = []
+        for t, s, _ in cons5:
+            gross = s - cbase
+            exported = 0.0
+            if self.export_entity:
+                if t in exp5:
+                    prev_e5 = exp5[t]
+                if prev_e5 is not None:
+                    exported = prev_e5 - ebase
+            min5_series.append((t, _bill(gross, self._net(gross, exported))))
+        today_states = min5_series or hour_series
+
         import_daily = self._backfilled_day != today
         baseline = (day_series or hour_series)[0][1]
         registry = er.async_get(self.hass)
@@ -299,9 +325,9 @@ class EacCoordinator(DataUpdateCoordinator):
             )
             async_import_statistics(self.hass, meta, rows)
 
-            # Also write today's hourly values as real STATE rows, so they appear
-            # in the entity History tab (statistics never render there for today).
-            state_points = [(when, getattr(bill, key)) for when, bill in hour_series]
+            # Also write today's 5-minute values as real STATE rows, so they
+            # appear in the entity History tab (statistics never render there).
+            state_points = [(when, getattr(bill, key)) for when, bill in today_states]
             if state_points:
                 live = self.hass.states.get(stat_id)
                 attrs = dict(live.attributes) if live else {"unit_of_measurement": unit}

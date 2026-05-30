@@ -88,7 +88,7 @@ network/ancillary/PSO only — exempt from production, fuel adjustment and RES f
   <tr><td>Bill math</td><td><span class="tag done">working</span></td><td>Matches hand-computed CLI values to the cent (e.g. gross 1005 / net 457 → €153.80).</td></tr>
   <tr><td>Periods + auto "current" period</td><td><span class="tag done">working</span></td><td>Current period start = latest configured end, end = today; recomputed every 5 min.</td></tr>
   <tr><td>Statistics backfill (per-sensor)</td><td><span class="tag done">working</span></td><td>All 19 current-period sensors populated: today hourly + ~80 days daily. Verified in the live recorder.</td></tr>
-  <tr><td>Show backfilled <em>today</em> in the History <em>tab</em></td><td><span class="tag done">implemented</span></td><td>v0.1.12 writes real STATE rows into the recorder. See §4.</td></tr>
+  <tr><td>Show backfilled <em>today</em> in the History <em>tab</em></td><td><span class="tag done">implemented</span></td><td>v0.1.13 writes real STATE rows (5-minute for today) into the recorder. See §4.</td></tr>
   <tr><td>Test suite</td><td><span class="tag done">17/17</span></td><td>7 pure billing + 10 runtime (pytest-homeassistant-custom-component).</td></tr>
 </table>
 
@@ -100,10 +100,10 @@ network/ancillary/PSO only — exempt from production, fuel adjustment and RES f
   <li><strong>Current-period history.</strong> Each refresh recomputes the bill for every day from period start → today and writes it as each sensor's own long-term statistic (<code>async_import_statistics</code>, <code>source="recorder"</code>, <code>state_class=total</code>): past days as <em>daily</em> (end-of-day) points, today <em>hour-by-hour</em>. Idempotent.</li>
 </ul>
 
-<h2 id="open">4. History tab vs. statistics — resolved (v0.1.12)</h2>
+<h2 id="open">4. History tab vs. statistics — resolved (v0.1.13)</h2>
 <div class="card">
 <p><strong>Goal:</strong> the bill-item sensors must show their full per-period curve — including <em>today, hourly</em> — in the entity <strong>History tab</strong>.</p>
-<p><strong>Resolution (web-researched, then implemented):</strong> within the recorder retention window the History tab renders the raw <code>states</code> table and <em>never</em> falls back to statistics — so the only way to show today's curve there is to <strong>write real <code>states</code> rows</strong>. There is no public API; <code>async_import_statistics</code> writes statistics tables only. v0.1.12 therefore writes today's hourly bill values directly into the recorder via the private <code>db_schema</code> models (<code>States</code>/<code>StatesMeta</code>/<code>StateAttributes</code>), on the recorder executor, in an atomic transaction, idempotent by exact-second dedup, reusing the live entity's attributes. A test confirms the rows appear via <code>state_changes_during_period</code> (the History-tab source).</p>
+<p><strong>Resolution (web-researched, then implemented):</strong> within the recorder retention window the History tab renders the raw <code>states</code> table and <em>never</em> falls back to statistics — so the only way to show today's curve there is to <strong>write real <code>states</code> rows</strong>. There is no public API; <code>async_import_statistics</code> writes statistics tables only. v0.1.13 therefore writes today's <strong>5-minute</strong> bill values directly into the recorder via the private <code>db_schema</code> models (<code>States</code>/<code>StatesMeta</code>/<code>StateAttributes</code>), on the recorder executor, in an atomic transaction, idempotent by exact-second dedup, reusing the live entity's attributes. A test confirms the rows appear via <code>state_changes_during_period</code> (the History-tab source).</p>
 <p><strong>Accepted caveats</strong> (documented, deliberate):</p>
 <ul>
   <li>Uses recorder <em>private</em> APIs — can break across HA schema migrations; pin/track versions.</li>
