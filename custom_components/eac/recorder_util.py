@@ -1,31 +1,20 @@
-"""Read energy consumed by a meter over a period, via long-term statistics.
+"""Read a meter's per-bucket readings over a period, via long-term statistics.
 
 We deliberately use **long-term statistics** rather than raw recorder states:
 raw states are purged (default ~10 days), so a historical billing period would
 have no data. Statistics for energy meters (state_class total/total_increasing)
-are kept indefinitely, and the ``change`` type gives the energy consumed in each
-bucket — robust against meter resets.
+are kept indefinitely.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from homeassistant.components.recorder import get_instance, statistics
 from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
-
-
-@dataclass
-class MeterUsage:
-    """Energy consumed in a window, plus the actual data coverage found."""
-
-    total: float          # summed hourly ``change`` over the window (kWh)
-    data_start: datetime  # start of the first statistics bucket that had data
-    data_end: datetime    # start of the last statistics bucket that had data
 
 
 def _to_dt(value) -> datetime:
@@ -57,23 +46,3 @@ async def async_state_series(
         ]
 
     return await get_instance(hass).async_add_executor_job(_fetch)
-
-
-async def async_meter_delta(
-    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
-) -> MeterUsage | None:
-    """Change in a meter's reading over [start, end): reading(end) − reading(start).
-
-    Returns None if the meter has no statistics in the window. Also reports the
-    first/last bucket with data so callers can detect partial coverage.
-    """
-    series = await async_state_series(hass, statistic_id, start, end, "hour")
-    if not series:
-        return None
-    # reading at window start = first bucket's reading minus its own change
-    baseline = series[0][1] - series[0][2]
-    return MeterUsage(
-        total=series[-1][1] - baseline,
-        data_start=series[0][0],
-        data_end=series[-1][0],
-    )

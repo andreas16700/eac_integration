@@ -30,7 +30,7 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .rates import resolve_month_rates
-from .recorder_util import async_meter_delta, async_state_series
+from .recorder_util import async_state_series
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -209,12 +209,16 @@ class EacCoordinator(DataUpdateCoordinator):
             )
             return _result(bill, complete=True, data_start=None, data_end=None, error=None)
 
-        # gross = consumption meter delta; exported = export meter delta;
-        # net = gross − exported.
-        gross_usage = await async_meter_delta(
-            self.hass, self.consumption_entity, start_dt, end_dt
+        # The bill at any point needs only the two offsets and the multipliers:
+        #   gross = consumption_now − consumption_offset
+        #   net   = gross − (export_now − export_offset)
+        # Each offset is the meter's reading at the period start, or 0 when it has
+        # none there (e.g. solar installed mid-period produced nothing before it
+        # existed, so all its recorded export counts). Same calc as the CLI.
+        cons = await async_state_series(
+            self.hass, self.consumption_entity, start_dt, end_dt, "hour"
         )
-        if gross_usage is None:
+        if not cons:
             return _result(
                 None, complete=False, data_start=None, data_end=None,
                 error=(
@@ -222,29 +226,24 @@ class EacCoordinator(DataUpdateCoordinator):
                     f"in {period[P_START]}..{period[P_END]}"
                 ),
             )
+        gross = cons[-1][1] - reading_at_start(cons, start_dt)
 
-        # Export offset = the meter's reading AT the period start, or 0 when it has
-        # no reading there (e.g. solar installed mid-period: it produced nothing
-        # before it existed, so all recorded export counts). This mirrors the CLI
-        # exactly (billing.reading_at_start). async_meter_delta would instead anchor
-        # the baseline at the first in-window bucket and silently drop the export
-        # recorded before then — the source of the ~€1 gap against the CLI line.
         exported = 0.0
         if self.export_entity:
-            exp_series = await async_state_series(
+            exp = await async_state_series(
                 self.hass, self.export_entity, start_dt, end_dt, "hour"
             )
-            if exp_series:
-                ebase = reading_at_start(exp_series, start_dt)
-                exported = exp_series[-1][1] - ebase
-        net = self._net(gross_usage.total, exported)
+            if exp:
+                exported = exp[-1][1] - reading_at_start(exp, start_dt)
+        net = self._net(gross, exported)
 
-        # Partial coverage: statistics that begin after the period start mean the
-        # early part of the period was never recorded.
-        complete = gross_usage.data_start <= start_dt + timedelta(hours=2)
+        # Partial coverage: consumption data that begins after the period start
+        # means the early part of the period was never recorded.
+        data_start = cons[0][0]
+        complete = data_start <= start_dt + timedelta(hours=2)
         error = None
         if not complete:
-            local_first = dt_util.as_local(gross_usage.data_start)
+            local_first = dt_util.as_local(data_start)
             error = (
                 f"PARTIAL: {self.consumption_entity} statistics begin "
                 f"{local_first:%Y-%m-%d %H:%M}, after period start {period[P_START]}"
@@ -252,13 +251,13 @@ class EacCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("EAC period '%s': %s", period.get(P_NAME), error)
 
         bill = calculate_bill(
-            gross_usage.total, net, rates["fuel_c"] or 0.0,
+            gross, net, rates["fuel_c"] or 0.0,
             production_rate=rates["production"], tariff=tariff,
         )
         return _result(
             bill,
             complete=complete,
-            data_start=dt_util.as_local(gross_usage.data_start).isoformat(),
-            data_end=dt_util.as_local(gross_usage.data_end).isoformat(),
+            data_start=dt_util.as_local(data_start).isoformat(),
+            data_end=dt_util.as_local(cons[-1][0]).isoformat(),
             error=error,
         )
