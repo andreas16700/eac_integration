@@ -260,3 +260,49 @@ async def test_current_daily_statistics(recorder_mock, enable_custom_integration
     expected = calculate_bill(48, 0.0, fuel_c, production_rate=0.1789).total
     assert abs(states[1] - expected) < 0.05, (states[1], expected)
     await _unload(hass, entry.entry_id)
+
+
+async def test_current_today_hourly_backfill(recorder_mock, enable_custom_integrations, hass: HomeAssistant) -> None:
+    """Today is backfilled hour-by-hour on the current-period total sensor."""
+    now = dt_util.now()
+    start_date = (now - timedelta(days=2)).date()
+    base = dt_util.start_of_local_day(start_date)
+    today_start = dt_util.start_of_local_day(now.date())
+
+    # Source stats: +1 kWh/hour from period start up to now.
+    nhours = int((now - base).total_seconds() // 3600) + 1
+    rows = [
+        StatisticData(start=base + timedelta(hours=i), state=float(i + 1), sum=float(i + 1))
+        for i in range(nhours)
+    ]
+    meta = StatisticMetaData(
+        mean_type=StatisticMeanType.NONE, has_mean=False, has_sum=True, name=None,
+        source="recorder", statistic_id="sensor.grid_import", unit_of_measurement="kWh",
+        unit_class="energy",
+    )
+    async_import_statistics(hass, meta, rows)
+    await async_wait_recording_done(hass)
+
+    entry = _entry(**{CONF_PERIODS: [{
+        "id": "prev", "name": "prev",
+        "start": (start_date - timedelta(days=30)).isoformat(),
+        "end": start_date.isoformat(),
+    }]})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await async_wait_recording_done(hass)
+
+    stats = await get_instance(hass).async_add_executor_job(
+        statistics_during_period, hass, base, now + timedelta(hours=1),
+        {"sensor.eac_current_total"}, "hour", None, {"state"},
+    )
+    series = stats.get("sensor.eac_current_total") or []
+    today_points = [
+        r for r in series
+        if dt_util.utc_from_timestamp(r["start"]).astimezone() >= today_start
+    ]
+    assert today_points, f"no intraday points for today: {series}"
+    states = [r["state"] for r in series]
+    assert states == sorted(states), states  # non-decreasing through the period
+    await _unload(hass, entry.entry_id)

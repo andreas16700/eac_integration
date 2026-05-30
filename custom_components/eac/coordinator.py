@@ -44,6 +44,7 @@ from .recorder_util import (
     MeterUsage,
     async_consumption_between,
     async_daily_changes,
+    async_hourly_changes,
 )
 
 # Bill line items worth a daily history (cumulative over the period).
@@ -110,6 +111,7 @@ class EacCoordinator(DataUpdateCoordinator):
             config_entry=entry,
         )
         self.entry = entry
+        self._backfilled_day = None  # date for which past-day stats were last imported
 
     @property
     def consumption_entity(self) -> str:
@@ -187,68 +189,91 @@ class EacCoordinator(DataUpdateCoordinator):
         return result
 
     async def _publish_current_daily(self, tariff: Tariff) -> None:
-        """Backfill each current-period bill sensor with a value for every day.
+        """Backfill the current-period bill sensors with their full history.
 
-        For each day from the period start up to today, compute the bill through
-        the END of that day and write it as the sensor's own long-term statistic
-        (statistic id = the sensor's entity id). So the bill sensors are populated
-        for all days of the period, visible in each sensor's History. Idempotent —
-        the whole series is recomputed and re-imported on each (daily) refresh.
+        Past complete days get one end-of-day value each; **today** is filled in
+        hour by hour and recomputed every refresh, so the current day populates
+        retroactively across the whole day (and stays current at the 5-minute
+        cadence). Values are written as each sensor's own long-term statistic
+        (statistic id = entity id). Past days are re-imported only when the date
+        rolls over; today's hours every refresh.
         """
         current = self._current_period()
         if not current:
             return
-        start_dt, end_dt = _period_bounds(current[P_START], current[P_END])
-        cons = await async_daily_changes(self.hass, self.consumption_entity, start_dt, end_dt)
-        if not cons:
-            return
-        exp: dict[datetime, float] = {}
-        if self.export_entity:
-            exp = dict(
-                await async_daily_changes(self.hass, self.export_entity, start_dt, end_dt)
-            )
-
         ed = dt_util.parse_date(current[P_END])
         rates = resolve_month_rates(ed.year, ed.month, self.month_rates, tariff.generation)
         if rates["fuel_c"] is None:
             return
 
-        # Cumulative bill at the end of each day.
-        gross = exported = 0.0
-        series: list[tuple[datetime, BillResult]] = []
-        for day_start, change in cons:
-            gross += change
-            exported += exp.get(day_start, 0.0)
-            series.append(
-                (
-                    day_start,
-                    calculate_bill(
-                        gross,
-                        exported,
-                        rates["fuel_c"],
-                        production_rate=rates["production"],
-                        tariff=tariff,
-                    ),
-                )
+        start_dt, end_dt = _period_bounds(current[P_START], current[P_END])
+        today = dt_util.now().date()
+        today_start = dt_util.start_of_local_day(today)
+
+        def _bill(g: float, x: float) -> BillResult:
+            return calculate_bill(
+                g, x, rates["fuel_c"], production_rate=rates["production"], tariff=tariff
             )
 
+        # Past complete days — cumulative bill at the end of each day.
+        gross = exported = 0.0
+        day_series: list[tuple[datetime, BillResult]] = []
+        past = await async_daily_changes(
+            self.hass, self.consumption_entity, start_dt, today_start
+        )
+        exp_past = (
+            dict(await async_daily_changes(self.hass, self.export_entity, start_dt, today_start))
+            if self.export_entity
+            else {}
+        )
+        for day, change in past:
+            gross += change
+            exported += exp_past.get(day, 0.0)
+            day_series.append((day, _bill(gross, exported)))
+
+        # Today — continue cumulating hour by hour up to now.
+        hour_series: list[tuple[datetime, BillResult]] = []
+        today_h = await async_hourly_changes(
+            self.hass, self.consumption_entity, today_start, end_dt
+        )
+        exp_today = (
+            dict(await async_hourly_changes(self.hass, self.export_entity, today_start, end_dt))
+            if self.export_entity
+            else {}
+        )
+        g, x = gross, exported
+        for hour, change in today_h:
+            g += change
+            x += exp_today.get(hour, 0.0)
+            hour_series.append((hour, _bill(g, x)))
+
+        if not day_series and not hour_series:
+            return
+
+        import_daily = self._backfilled_day != today
+        baseline = (day_series or hour_series)[0][1]
         registry = er.async_get(self.hass)
+        resolved = False
         for key, unit in _CUMULATIVE.items():
             stat_id = registry.async_get_entity_id(
                 "sensor", DOMAIN, f"{self.entry.entry_id}_{CURRENT_ID}_{key}"
             )
             if not stat_id:
                 continue  # entity not registered yet; picked up on next refresh
-            first = getattr(series[0][1], key)
+            resolved = True
+            first = getattr(baseline, key)
+            source = (day_series if import_daily else []) + hour_series
             rows = [
                 StatisticData(
-                    start=day,
+                    start=when,
                     state=getattr(bill, key),
                     sum=getattr(bill, key) - first,
                     last_reset=start_dt,
                 )
-                for day, bill in series
+                for when, bill in source
             ]
+            if not rows:
+                continue
             meta = StatisticMetaData(
                 mean_type=StatisticMeanType.NONE,
                 has_mean=False,
@@ -260,6 +285,9 @@ class EacCoordinator(DataUpdateCoordinator):
                 unit_class="energy" if unit == KWH else None,
             )
             async_import_statistics(self.hass, meta, rows)
+
+        if resolved:
+            self._backfilled_day = today
 
     async def _compute(self, period: dict, tariff: Tariff) -> PeriodData:
         start_dt, end_dt = _period_bounds(period[P_START], period[P_END])

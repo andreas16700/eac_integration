@@ -73,17 +73,17 @@ async def async_consumption_between(
     return await get_instance(hass).async_add_executor_job(_fetch)
 
 
-async def async_daily_changes(
-    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
+async def _async_changes(
+    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime, period: str
 ) -> list[tuple[datetime, float]]:
-    """Per-local-day energy change for ``statistic_id`` in [start, end).
+    """Per-bucket energy change for ``statistic_id`` in [start, end) at ``period``.
 
-    Returns a list of (day_start_utc, change_kwh), one per day that has data.
+    Returns a list of (bucket_start_utc, change_kwh), one per bucket with data.
     """
 
     def _fetch() -> list[tuple[datetime, float]]:
         rows = statistics.statistics_during_period(
-            hass, start, end, {statistic_id}, "day", None, {"change"}
+            hass, start, end, {statistic_id}, period, None, {"change"}
         )
         out: list[tuple[datetime, float]] = []
         for row in rows.get(statistic_id) or []:
@@ -93,3 +93,17 @@ async def async_daily_changes(
         return out
 
     return await get_instance(hass).async_add_executor_job(_fetch)
+
+
+async def async_daily_changes(
+    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
+) -> list[tuple[datetime, float]]:
+    """Per-local-day energy change for ``statistic_id`` in [start, end)."""
+    return await _async_changes(hass, statistic_id, start, end, "day")
+
+
+async def async_hourly_changes(
+    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
+) -> list[tuple[datetime, float]]:
+    """Per-hour energy change for ``statistic_id`` in [start, end)."""
+    return await _async_changes(hass, statistic_id, start, end, "hour")
