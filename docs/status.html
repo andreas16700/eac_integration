@@ -62,7 +62,7 @@ A <em>billing period</em> has a start and end; its bill items are sensors groupe
 <h3>Model (the whole thing)</h3>
 <div class="kv">
   <div>Inputs</div><div><strong>Consumption / grid-import meter</strong> (= gross imported) + <strong>solar export meter</strong> (optional), both cumulative kWh.</div>
-  <div>Gross / net</div><div><code>gross = consumption(end) − consumption(start)</code>; <code>exported = export(end) − export(start)</code>; <code>net = gross − exported</code> (may be negative on net-export days).</div>
+  <div>Offsets</div><div>At the period start X, capture two offsets: the <strong>consumption reading</strong> and the <strong>export reading</strong> at X (export offset = 0 if no reading at X).</div><div>Gross / net at point Y</div><div><code>gross = consumption(Y) − consumption_offset</code>; <code>net = gross − (export(Y) − export_offset)</code> (may be negative on net-export days).</div>
   <div>Bill</div><div><code>bill = f(gross, net, period multipliers)</code> — see formulas below.</div>
   <div>Multipliers</div><div>Per the period's <em>rate month</em> (default = end month): fuel adjustment (¢/kWh, bundled EAC table 2013–2026 + per-month override) and production (€/kWh, tariff default 0.1789, per-month overridable).</div>
 </div>
@@ -151,7 +151,7 @@ network/ancillary/PSO only — exempt from production, fuel adjustment and RES f
   <li><strong>Net metering:</strong> <code>net = gross − exported</code>, no clamp; the total legitimately falls (even negative) when exporting more than importing.</li>
   <li><strong>Data realities on this install:</strong> the configured "export" sensor was <code>sensor.solax_total_yield</code> (solar <em>production</em>, not grid export); the source consumption meter's long-term statistics begin only 2026-03-05.</li>
   <li><strong>Shared calc.</strong> The per-point bill (<code>compute_bill_series</code>) and the period-start baseline (<code>reading_at_start</code>, “reading at start else 0”) live in <code>billing.py</code> and are used by BOTH the integration and the standalone CLI (<code>scripts/eac_backfill.py</code>) — identical inputs, identical outputs.</li>
-  <li><strong>Manual CLI.</strong> <code>scripts/eac_backfill.py</code> runs inside the HA container, computes 5-minute bill points from the recorder statistics and inserts <code>states</code> directly — backfills the current day with no HA restart.</li>
+  <li><strong>Manual CLI.</strong> <code>scripts/eac_backfill.py</code> runs inside the HA container, reads the recorder 5-minute statistics, calls the shared <code>compute_bill_series</code>, and <strong>idempotently upserts</strong> a <code>state</code> at every aligned 5-minute slot (<code>:00,:05,…</code>) for each bill sensor — exactly one value per slot, safe to re-run (connects with <code>CLIENT.FOUND_ROWS</code> so re-runs update in place, never duplicate). <code>--since-hours N</code> or <code>--whole-period</code>. Backfills with no HA restart.</li>
 </ul>
 
 <h2>7. Next steps</h2>
