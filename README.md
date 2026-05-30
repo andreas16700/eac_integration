@@ -9,25 +9,28 @@ recompute from your meter history.
 
 ## How it works
 
-Inputs (config flow):
-- **Energy consumption meter** — cumulative grid import (kWh). Required.
-- **Energy export meter** — cumulative grid export (kWh). Optional.
+Inputs (config flow) — two cumulative kWh meters:
+- **Gross imported energy meter** — total energy imported from the grid. Required.
+- **Net imported energy meter** — net imported (import minus what solar export
+  cancels). Optional; defaults to gross when omitted.
 
-> **Requirement:** the meter sensors must have a `state_class` of `total` or
-> `total_increasing` (i.e. normal energy meters) so Home Assistant keeps
-> **long-term statistics** for them. The integration reads those statistics —
-> not raw history — so it works for billing periods far in the past (raw states
-> are purged after ~10 days, statistics are kept indefinitely). The recorder
+The bill is a function of just these two values over the period plus the period's
+multipliers. **gross** and **net** are read straight from their sensors (the
+sensor's value at a point in time, minus its value at the period start). Net can
+fall when you export more than you import on solar days — and the bill falls with
+it. That's expected.
+
+> **Requirement:** the meter sensors must have a `state_class` so Home Assistant
+> keeps **long-term statistics** for them. The integration reads those statistics
+> (not raw history), so it works for billing periods far in the past. The recorder
 > integration must be enabled (it is, by default).
 
-For each billing period the integration reads the meters at the period start and
-end (from the recorder) to get the energy used:
+For each billing period:
 
 ```
-gross imported = consumption(end) − consumption(start)
-exported       = export(end) − export(start)        # 0 if no export meter
-offset         = min(gross, exported)
-net imported   = gross − offset
+gross imported = gross_meter(end) − gross_meter(start)
+net imported   = net_meter(end)   − net_meter(start)     # = gross if no net meter
+offset         = gross − net
 ```
 
 Billing rules (matching real EAC net-metering bills):

@@ -17,8 +17,8 @@ from homeassistant.helpers import selector
 
 from .billing import Tariff
 from .const import (
-    CONF_CONSUMPTION,
-    CONF_EXPORT,
+    CONF_GROSS,
+    CONF_NET,
     CONF_MONTH_RATES,
     CONF_PERIODS,
     CONF_TARIFF,
@@ -28,8 +28,8 @@ from .const import (
     M_PRODUCTION,
     P_END,
     P_ID,
-    P_MANUAL_EXPORT,
     P_MANUAL_GROSS,
+    P_MANUAL_NET,
     P_NAME,
     P_RATE_MONTH,
     P_START,
@@ -61,9 +61,9 @@ class EacConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if user_input is not None:
-            data = {CONF_CONSUMPTION: user_input[CONF_CONSUMPTION]}
-            if user_input.get(CONF_EXPORT):
-                data[CONF_EXPORT] = user_input[CONF_EXPORT]
+            data = {CONF_GROSS: user_input[CONF_GROSS]}
+            if user_input.get(CONF_NET):
+                data[CONF_NET] = user_input[CONF_NET]
             return self.async_create_entry(
                 title=DEFAULT_NAME,
                 data=data,
@@ -72,8 +72,8 @@ class EacConfigFlow(ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_CONSUMPTION): _ENERGY_SELECTOR,
-                vol.Optional(CONF_EXPORT): _ENERGY_SELECTOR,
+                vol.Required(CONF_GROSS): _ENERGY_SELECTOR,
+                vol.Optional(CONF_NET): _ENERGY_SELECTOR,
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema)
@@ -84,20 +84,19 @@ class EacConfigFlow(ConfigFlow, domain=DOMAIN):
         """Change the source meters without removing the integration."""
         entry = self._get_reconfigure_entry()
         if user_input is not None:
-            data = {CONF_CONSUMPTION: user_input[CONF_CONSUMPTION]}
-            if user_input.get(CONF_EXPORT):
-                data[CONF_EXPORT] = user_input[CONF_EXPORT]
+            data = {CONF_GROSS: user_input[CONF_GROSS]}
+            if user_input.get(CONF_NET):
+                data[CONF_NET] = user_input[CONF_NET]
             return self.async_update_reload_and_abort(entry, data=data)
 
         cur = entry.data
         schema = vol.Schema(
             {
                 vol.Required(
-                    CONF_CONSUMPTION,
-                    description={"suggested_value": cur.get(CONF_CONSUMPTION)},
+                    CONF_GROSS, description={"suggested_value": cur.get(CONF_GROSS)}
                 ): _ENERGY_SELECTOR,
                 vol.Optional(
-                    CONF_EXPORT, description={"suggested_value": cur.get(CONF_EXPORT)}
+                    CONF_NET, description={"suggested_value": cur.get(CONF_NET)}
                 ): _ENERGY_SELECTOR,
             }
         )
@@ -160,8 +159,8 @@ class EacOptionsFlow(OptionsFlow):
                     P_MANUAL_GROSS, description={"suggested_value": d.get(P_MANUAL_GROSS)}
                 ): _number(),  # override gross imported kWh (skips statistics)
                 vol.Optional(
-                    P_MANUAL_EXPORT, description={"suggested_value": d.get(P_MANUAL_EXPORT)}
-                ): _number(),  # exported kWh, used with manual gross
+                    P_MANUAL_NET, description={"suggested_value": d.get(P_MANUAL_NET)}
+                ): _number(),  # net imported kWh, used with manual gross
             }
         )
 
@@ -173,7 +172,7 @@ class EacOptionsFlow(OptionsFlow):
             period[P_RATE_MONTH] = rm
         else:
             period.pop(P_RATE_MONTH, None)
-        for key in (P_MANUAL_GROSS, P_MANUAL_EXPORT):
+        for key in (P_MANUAL_GROSS, P_MANUAL_NET):
             if user_input.get(key) is not None:
                 period[key] = float(user_input[key])
             else:

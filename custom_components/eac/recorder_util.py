@@ -35,90 +35,45 @@ def _to_dt(value) -> datetime:
     return datetime.fromtimestamp(value, tz=timezone.utc)
 
 
-async def async_consumption_between(
-    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
-) -> MeterUsage | None:
-    """Energy consumed by ``statistic_id`` in [start, end), or None if no stats.
-
-    For a Home-Assistant-recorded sensor the statistic id equals the entity id.
-    Sums the hourly ``change`` over the window and also reports the first/last
-    bucket that actually had data, so callers can detect partial coverage (the
-    period starting before the meter's statistics began). None means the source
-    has no long-term statistics in the window at all.
-    """
-
-    def _fetch() -> MeterUsage | None:
-        rows = statistics.statistics_during_period(
-            hass, start, end, {statistic_id}, "hour", None, {"sum", "change"}
-        )
-        series = [r for r in (rows.get(statistic_id) or []) if r.get("sum") is not None]
-        if not series:
-            return None
-        # Use the monotonic cumulative `sum` (reset-corrected) rather than summing
-        # per-bucket `change`, which can drift on noisy meters. Energy in the
-        # window = sum(last) − sum(at period start). The first bucket's
-        # (sum − change) is the cumulative value at the window start.
-        first, last = series[0], series[-1]
-        baseline = float(first["sum"]) - float(first.get("change") or 0.0)
-        total = float(last["sum"]) - baseline
-        return MeterUsage(
-            total=max(0.0, total),
-            data_start=_to_dt(first["start"]),
-            data_end=_to_dt(last["start"]),
-        )
-
-    return await get_instance(hass).async_add_executor_job(_fetch)
-
-
-async def async_sum_series(
+async def async_state_series(
     hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime, period: str
 ) -> list[tuple[datetime, float, float]]:
-    """Per-bucket (start, cumulative_sum, change) for ``statistic_id`` in [start, end)."""
+    """Per-bucket (start, meter_reading, change) for ``statistic_id`` in [start, end).
+
+    ``meter_reading`` is the recorded state (the sensor's own value) at the end of
+    each bucket. ``change`` is included only so callers can derive the reading at
+    the window start (reading − change). The reading may rise or fall (e.g. a net
+    meter), so no monotonicity is assumed.
+    """
 
     def _fetch() -> list[tuple[datetime, float, float]]:
         rows = statistics.statistics_during_period(
-            hass, start, end, {statistic_id}, period, None, {"sum", "change"}
+            hass, start, end, {statistic_id}, period, None, {"state", "change"}
         )
         return [
-            (_to_dt(r["start"]), float(r["sum"]), float(r.get("change") or 0.0))
+            (_to_dt(r["start"]), float(r["state"]), float(r.get("change") or 0.0))
             for r in (rows.get(statistic_id) or [])
-            if r.get("sum") is not None
+            if r.get("state") is not None
         ]
 
     return await get_instance(hass).async_add_executor_job(_fetch)
 
 
-async def _async_changes(
-    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime, period: str
-) -> list[tuple[datetime, float]]:
-    """Per-bucket energy change for ``statistic_id`` in [start, end) at ``period``.
+async def async_meter_delta(
+    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
+) -> MeterUsage | None:
+    """Change in a meter's reading over [start, end): reading(end) − reading(start).
 
-    Returns a list of (bucket_start_utc, change_kwh), one per bucket with data.
+    Returns None if the meter has no statistics in the window. Also reports the
+    first/last bucket with data so callers can detect partial coverage.
     """
-
-    def _fetch() -> list[tuple[datetime, float]]:
-        rows = statistics.statistics_during_period(
-            hass, start, end, {statistic_id}, period, None, {"change"}
-        )
-        out: list[tuple[datetime, float]] = []
-        for row in rows.get(statistic_id) or []:
-            change = row.get("change")
-            if change is not None:
-                out.append((_to_dt(row["start"]), float(change)))
-        return out
-
-    return await get_instance(hass).async_add_executor_job(_fetch)
-
-
-async def async_daily_changes(
-    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
-) -> list[tuple[datetime, float]]:
-    """Per-local-day energy change for ``statistic_id`` in [start, end)."""
-    return await _async_changes(hass, statistic_id, start, end, "day")
-
-
-async def async_hourly_changes(
-    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime
-) -> list[tuple[datetime, float]]:
-    """Per-hour energy change for ``statistic_id`` in [start, end)."""
-    return await _async_changes(hass, statistic_id, start, end, "hour")
+    series = await async_state_series(hass, statistic_id, start, end, "hour")
+    if not series:
+        return None
+    # reading at window start = first bucket's reading minus its own change
+    baseline = series[0][1] - series[0][2]
+    return MeterUsage(
+        total=series[-1][1] - baseline,
+        data_start=series[0][0],
+        data_end=series[-1][0],
+    )

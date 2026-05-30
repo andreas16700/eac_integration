@@ -19,8 +19,8 @@ from homeassistant.util import dt as dt_util
 
 from .billing import BillResult, Tariff, calculate_bill
 from .const import (
-    CONF_CONSUMPTION,
-    CONF_EXPORT,
+    CONF_GROSS,
+    CONF_NET,
     CONF_MONTH_RATES,
     CONF_PERIODS,
     CONF_TARIFF,
@@ -31,8 +31,8 @@ from .const import (
     KWH,
     P_END,
     P_ID,
-    P_MANUAL_EXPORT,
     P_MANUAL_GROSS,
+    P_MANUAL_NET,
     P_NAME,
     P_RATE_MONTH,
     P_START,
@@ -40,11 +40,7 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .rates import resolve_month_rates
-from .recorder_util import (
-    MeterUsage,
-    async_consumption_between,
-    async_sum_series,
-)
+from .recorder_util import async_meter_delta, async_state_series
 
 # Bill line items worth a daily history (cumulative over the period).
 _CUMULATIVE = {
@@ -69,8 +65,8 @@ class PeriodData:
         has_fuel: bool,
         fuel_source: str,
         prod_source: str,
-        consumption_entity: str,
-        export_entity: str | None,
+        gross_entity: str,
+        net_entity: str | None,
         data_start: str | None = None,
         data_end: str | None = None,
         coverage_complete: bool | None = None,
@@ -83,8 +79,8 @@ class PeriodData:
         self.has_fuel = has_fuel
         self.fuel_source = fuel_source
         self.prod_source = prod_source
-        self.consumption_entity = consumption_entity
-        self.export_entity = export_entity
+        self.gross_entity = gross_entity
+        self.net_entity = net_entity
         self.data_start = data_start
         self.data_end = data_end
         self.coverage_complete = coverage_complete
@@ -113,12 +109,12 @@ class EacCoordinator(DataUpdateCoordinator):
         self._backfilled_day = None  # date for which past-day stats were last imported
 
     @property
-    def consumption_entity(self) -> str:
-        return self.entry.data[CONF_CONSUMPTION]
+    def gross_entity(self) -> str:
+        return self.entry.data[CONF_GROSS]
 
     @property
-    def export_entity(self) -> str | None:
-        return self.entry.data.get(CONF_EXPORT)
+    def net_entity(self) -> str | None:
+        return self.entry.data.get(CONF_NET)
 
     @property
     def periods(self) -> list[dict]:
@@ -177,8 +173,8 @@ class EacCoordinator(DataUpdateCoordinator):
                     has_fuel=False,
                     fuel_source="error",
                     prod_source="error",
-                    consumption_entity=self.consumption_entity,
-                    export_entity=self.export_entity,
+                    gross_entity=self.gross_entity,
+                    net_entity=self.net_entity,
                     error=str(err),
                 )
         try:
@@ -214,42 +210,49 @@ class EacCoordinator(DataUpdateCoordinator):
                 g, x, rates["fuel_c"], production_rate=rates["production"], tariff=tariff
             )
 
-        # Cumulative meter reading (monotonic `sum`) per bucket: past as whole
-        # days, today as hours. gross(bucket) = sum(bucket) − sum(period start),
-        # so the bill is monotonic and day/today join seamlessly.
-        cons_past = await async_sum_series(
-            self.hass, self.consumption_entity, start_dt, today_start, "day"
+        # Per-bucket meter readings — past as whole days, today as hours. Each
+        # point = calculate_bill(gross(bucket), net(bucket)), where the bucket
+        # value = reading(bucket) − reading(period start) for that input sensor.
+        # Values follow the sensors and may rise or fall (e.g. net on solar days).
+        gross_past = await async_state_series(
+            self.hass, self.gross_entity, start_dt, today_start, "day"
         )
-        cons_today = await async_sum_series(
-            self.hass, self.consumption_entity, today_start, end_dt, "hour"
+        gross_today = await async_state_series(
+            self.hass, self.gross_entity, today_start, end_dt, "hour"
         )
-        if not cons_past and not cons_today:
+        if not gross_past and not gross_today:
             return
-        fb = (cons_past or cons_today)[0]
-        base = fb[1] - fb[2]  # cumulative reading at the period start
+        gfb = (gross_past or gross_today)[0]
+        gbase = gfb[1] - gfb[2]  # gross reading at the period start
 
-        exp_map: dict[datetime, float] = {}
-        exp_base = 0.0
-        if self.export_entity:
-            exp_rows = await async_sum_series(
-                self.hass, self.export_entity, start_dt, today_start, "day"
-            ) + await async_sum_series(
-                self.hass, self.export_entity, today_start, end_dt, "hour"
+        net_map: dict[datetime, float] = {}
+        nbase = gbase
+        if self.net_entity:
+            net_rows = await async_state_series(
+                self.hass, self.net_entity, start_dt, today_start, "day"
+            ) + await async_state_series(
+                self.hass, self.net_entity, today_start, end_dt, "hour"
             )
-            if exp_rows:
-                exp_base = exp_rows[0][1] - exp_rows[0][2]
-                exp_map = {t: s for t, s, _ in exp_rows}
+            if net_rows:
+                nbase = net_rows[0][1] - net_rows[0][2]
+                net_map = {t: s for t, s, _ in net_rows}
 
-        prev_exp = 0.0
+        prev_net: float | None = None
 
-        def _row(when: datetime, total_sum: float) -> tuple[datetime, BillResult]:
-            nonlocal prev_exp
-            if when in exp_map:
-                prev_exp = max(0.0, exp_map[when] - exp_base)
-            return when, _bill(max(0.0, total_sum - base), prev_exp)
+        def _row(when: datetime, gross_reading: float) -> tuple[datetime, BillResult]:
+            nonlocal prev_net
+            gross_val = gross_reading - gbase
+            if self.net_entity:
+                if when in net_map:
+                    prev_net = net_map[when]
+                reading = prev_net if prev_net is not None else gross_reading
+                net_val = reading - nbase
+            else:
+                net_val = gross_val
+            return when, _bill(gross_val, net_val)
 
-        day_series = [_row(t, s) for t, s, _ in cons_past]
-        hour_series = [_row(t, s) for t, s, _ in cons_today]
+        day_series = [_row(t, s) for t, s, _ in gross_past]
+        hour_series = [_row(t, s) for t, s, _ in gross_today]
 
         if not day_series and not hour_series:
             return
@@ -296,24 +299,6 @@ class EacCoordinator(DataUpdateCoordinator):
     async def _compute(self, period: dict, tariff: Tariff) -> PeriodData:
         start_dt, end_dt = _period_bounds(period[P_START], period[P_END])
 
-        # Manual override: use entered kWh and skip statistics entirely.
-        manual = period.get(P_MANUAL_GROSS) is not None
-        if manual:
-            gross_usage = MeterUsage(
-                total=float(period[P_MANUAL_GROSS]), data_start=start_dt, data_end=end_dt
-            )
-            exported = float(period.get(P_MANUAL_EXPORT) or 0.0)
-        else:
-            gross_usage = await async_consumption_between(
-                self.hass, self.consumption_entity, start_dt, end_dt
-            )
-            export_usage = None
-            if self.export_entity:
-                export_usage = await async_consumption_between(
-                    self.hass, self.export_entity, start_dt, end_dt
-                )
-            exported = export_usage.total if export_usage else 0.0
-
         # Pick the rate month (default = end month of the period).
         end_date = dt_util.parse_date(period[P_END])
         rm = period.get(P_RATE_MONTH)
@@ -322,62 +307,84 @@ class EacCoordinator(DataUpdateCoordinator):
         else:
             rate_year, rate_month = end_date.year, end_date.month
         rate_month_key = f"{rate_year:04d}-{rate_month:02d}"
-
         rates = resolve_month_rates(
             rate_year, rate_month, self.month_rates, tariff.generation
         )
         has_fuel = rates["fuel_c"] is not None
 
-        if gross_usage is None:
+        def _result(bill, *, complete, data_start, data_end, error):
             return PeriodData(
-                None,
+                bill,
                 start=period[P_START],
                 end=period[P_END],
                 rate_month=rate_month_key,
                 has_fuel=has_fuel,
                 fuel_source=rates["fuel_source"],
                 prod_source=rates["prod_source"],
-                consumption_entity=self.consumption_entity,
-                export_entity=self.export_entity,
-                coverage_complete=False,
+                gross_entity=self.gross_entity,
+                net_entity=self.net_entity,
+                data_start=data_start,
+                data_end=data_end,
+                coverage_complete=complete,
+                error=error,
+            )
+
+        # Manual override: use entered kWh and skip statistics entirely.
+        if period.get(P_MANUAL_GROSS) is not None:
+            gross = float(period[P_MANUAL_GROSS])
+            net = (
+                float(period[P_MANUAL_NET])
+                if period.get(P_MANUAL_NET) is not None
+                else gross
+            )
+            bill = calculate_bill(
+                gross, net, rates["fuel_c"] or 0.0,
+                production_rate=rates["production"], tariff=tariff,
+            )
+            return _result(bill, complete=True, data_start=None, data_end=None, error=None)
+
+        # gross + net are read straight from their input sensors (delta over the
+        # period). net defaults to gross when no net meter is configured.
+        gross_usage = await async_meter_delta(
+            self.hass, self.gross_entity, start_dt, end_dt
+        )
+        if gross_usage is None:
+            return _result(
+                None, complete=False, data_start=None, data_end=None,
                 error=(
-                    f"no long-term statistics for {self.consumption_entity} "
+                    f"no long-term statistics for {self.gross_entity} "
                     f"in {period[P_START]}..{period[P_END]}"
                 ),
             )
 
-        # Detect partial coverage: statistics that begin after the period start
-        # mean the early part of the period was never recorded (under-counts).
+        net = gross_usage.total
+        if self.net_entity:
+            net_usage = await async_meter_delta(
+                self.hass, self.net_entity, start_dt, end_dt
+            )
+            if net_usage is not None:
+                net = net_usage.total
+
+        # Partial coverage: statistics that begin after the period start mean the
+        # early part of the period was never recorded.
         complete = gross_usage.data_start <= start_dt + timedelta(hours=2)
         error = None
         if not complete:
             local_first = dt_util.as_local(gross_usage.data_start)
             error = (
-                f"PARTIAL: {self.consumption_entity} statistics begin "
-                f"{local_first:%Y-%m-%d %H:%M}, after period start {period[P_START]} "
-                f"— gross is under-counted"
+                f"PARTIAL: {self.gross_entity} statistics begin "
+                f"{local_first:%Y-%m-%d %H:%M}, after period start {period[P_START]}"
             )
             _LOGGER.warning("EAC period '%s': %s", period.get(P_NAME), error)
 
         bill = calculate_bill(
-            gross_usage.total,
-            exported,
-            rates["fuel_c"] or 0.0,
-            production_rate=rates["production"],
-            tariff=tariff,
+            gross_usage.total, net, rates["fuel_c"] or 0.0,
+            production_rate=rates["production"], tariff=tariff,
         )
-        return PeriodData(
+        return _result(
             bill,
-            start=period[P_START],
-            end=period[P_END],
-            rate_month=rate_month_key,
-            has_fuel=has_fuel,
-            fuel_source=rates["fuel_source"],
-            prod_source=rates["prod_source"],
-            consumption_entity=self.consumption_entity,
-            export_entity=self.export_entity,
+            complete=complete,
             data_start=dt_util.as_local(gross_usage.data_start).isoformat(),
             data_end=dt_util.as_local(gross_usage.data_end).isoformat(),
-            coverage_complete=complete,
             error=error,
         )

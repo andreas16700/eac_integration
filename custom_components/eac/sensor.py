@@ -132,8 +132,8 @@ class EacBillSensor(CoordinatorEntity[EacCoordinator], SensorEntity):
             "period_start": data.start,
             "period_end": data.end,
             "rate_month": data.rate_month,
-            "consumption_entity": data.consumption_entity,
-            "export_entity": data.export_entity,
+            "gross_entity": data.gross_entity,
+            "net_entity": data.net_entity,
             "data_available_from": data.data_start,
             "data_available_to": data.data_end,
             "coverage_complete": data.coverage_complete,
@@ -143,6 +143,6 @@ class EacBillSensor(CoordinatorEntity[EacCoordinator], SensorEntity):
             "production_rate_eur_per_kwh": getattr(bill, "production_rate", None) if bill else None,
             "gross_imported_kwh": getattr(bill, "gross_kwh", None) if bill else None,
             "net_imported_kwh": getattr(bill, "net_kwh", None) if bill else None,
-            "exported_kwh": getattr(bill, "exported_kwh", None) if bill else None,
+            "offset_kwh": getattr(bill, "offset_kwh", None) if bill else None,
             "error": data.error,
         }

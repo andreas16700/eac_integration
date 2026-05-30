@@ -8,72 +8,67 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "custom_components" / "eac"))
 
-from billing import Tariff, calculate_bill, split_net_metering  # noqa: E402
+from billing import Tariff, calculate_bill  # noqa: E402
 
 
 def approx(a: float, b: float, tol: float = 0.01) -> bool:
     return abs(a - b) <= tol
 
 
-def test_split_net_metering():
-    assert split_net_metering(1005, 548) == (457, 548)
-    assert split_net_metering(732.05, 56.01) == (676.04, 56.01)
-    # export exceeds import → net 0, offset capped at gross
-    assert split_net_metering(100, 250) == (0, 100)
-    # no export
-    assert split_net_metering(700, 0) == (700, 0)
-
-
-def test_neighbor_net_metering():
-    # gross 1005 / net 457 (export 548), May 2026 fuel 2.3796, production 0.1789, VAT 5%
-    b = calculate_bill(1005, 548, 2.3796)
-    assert approx(b.production, 81.76), b.production
-    assert approx(b.network, 36.78), b.network
+def test_neighbor():
+    # gross 1005, net 457, May 2026 fuel 2.3796, production 0.1789, VAT 5%
+    b = calculate_bill(1005, 457, 2.3796)
+    assert approx(b.offset_kwh, 548), b.offset_kwh
+    assert approx(b.production, 81.76), b.production      # net 457
+    assert approx(b.network, 36.78), b.network            # gross 1005
     assert approx(b.fuel_adjustment, 10.87), b.fuel_adjustment
-    assert approx(b.res_fund, 2.29), b.res_fund      # on net 457
-    assert approx(b.vat, 7.22), b.vat                # 5%
+    assert approx(b.res_fund, 2.29), b.res_fund           # net 457
+    assert approx(b.vat, 7.22), b.vat
     assert approx(b.total, 153.80), b.total
 
 
-def test_user_net_metering():
-    # gross 732.05 / net 676.04 (export 56.01), May 2026
-    b = calculate_bill(732.05, 56.01, 2.3796)
+def test_user():
+    b = calculate_bill(732.05, 676.04, 2.3796)
     assert approx(b.total, 189.02), b.total
 
 
-def test_normal_no_export():
-    # 700 kWh normal, May 2026
-    b = calculate_bill(700, 0, 2.3796)
-    assert b.net_kwh == 700 and b.offset_kwh == 0
-    assert approx(b.production, 125.23), b.production   # 700 * 0.1789
-    assert approx(b.res_fund, 3.50), b.res_fund          # on 700
+def test_normal_net_equals_gross():
+    b = calculate_bill(700, 700, 2.3796)
+    assert b.offset_kwh == 0
+    assert approx(b.production, 125.23), b.production      # 700 * 0.1789
+    assert approx(b.res_fund, 3.50), b.res_fund
     assert approx(b.total, 192.76), b.total
 
 
 def test_production_rate_override():
-    # old production multiplier 0.1034 selectable per month
-    b = calculate_bill(700, 0, 2.3796, production_rate=0.1034)
-    assert approx(b.production, 72.38), b.production     # 700 * 0.1034
+    b = calculate_bill(700, 700, 2.3796, production_rate=0.1034)
+    assert approx(b.production, 72.38), b.production
     assert approx(b.production_rate, 0.1034)
 
 
 def test_tariff_override_network():
-    # municipality-specific network rate
     t = Tariff.from_overrides({"network": 0.0300})
-    b = calculate_bill(1000, 0, 0.0, tariff=t)
+    b = calculate_bill(1000, 1000, 0.0, tariff=t)
     assert approx(b.network, 30.0), b.network
 
 
-def test_offset_exempt_from_production_and_fuel():
-    # The (gross-net) offset must NOT carry production / fuel / RES.
-    full = calculate_bill(1000, 0, 5.0)       # net 1000
-    half = calculate_bill(1000, 400, 5.0)     # net 600, offset 400
-    # production scales with net only
-    assert approx(half.production, full.production * 0.6)
-    assert approx(half.fuel_adjustment, full.fuel_adjustment * 0.6)
-    assert approx(half.res_fund, full.res_fund * 0.6)
-    # network scales with gross (unchanged)
-    assert approx(half.network, full.network)
+def test_offset_exempt_from_net_charges():
+    # Production / fuel / RES scale with NET; network/ancillary/PSO with GROSS.
+    full = calculate_bill(1000, 1000, 5.0)   # net == gross
+    part = calculate_bill(1000, 600, 5.0)    # net 600, offset 400
+    assert approx(part.production, full.production * 0.6)
+    assert approx(part.fuel_adjustment, full.fuel_adjustment * 0.6)
+    assert approx(part.res_fund, full.res_fund * 0.6)
+    assert approx(part.network, full.network)      # gross unchanged
+    assert approx(part.ancillary, full.ancillary)
+    assert approx(part.pso, full.pso)
+
+
+def test_total_falls_when_net_falls():
+    # If net imported drops (e.g. more solar export), the total drops too.
+    more = calculate_bill(1000, 800, 5.0)
+    less = calculate_bill(1000, 300, 5.0)
+    assert less.total < more.total
 
 
 def main():

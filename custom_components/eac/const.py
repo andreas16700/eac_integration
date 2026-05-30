@@ -10,9 +10,9 @@ DOMAIN = "eac"
 PLATFORMS = ["sensor"]
 DEFAULT_NAME = "EAC"
 
-# Config entry data
-CONF_CONSUMPTION = "consumption_entity"
-CONF_EXPORT = "export_entity"
+# Config entry data — the two input meters (cumulative kWh)
+CONF_GROSS = "gross_entity"   # gross imported energy
+CONF_NET = "net_entity"       # net imported energy (optional; defaults to gross)
 
 # Options
 CONF_PERIODS = "periods"          # list[dict] of billing periods
@@ -25,8 +25,8 @@ P_NAME = "name"
 P_START = "start"            # ISO date "YYYY-MM-DD"
 P_END = "end"               # ISO date "YYYY-MM-DD"
 P_RATE_MONTH = "rate_month"  # "YYYY-MM" used to pick fuel/production multipliers
-P_MANUAL_GROSS = "manual_gross_kwh"    # override: gross imported kWh (skip statistics)
-P_MANUAL_EXPORT = "manual_export_kwh"  # override: exported kWh (with manual gross)
+P_MANUAL_GROSS = "manual_gross_kwh"  # override: gross imported kWh (skip statistics)
+P_MANUAL_NET = "manual_net_kwh"      # override: net imported kWh (with manual gross)
 
 # Auto-maintained "current" (ongoing) period: start = latest configured period's
 # end, end = today. Only present when at least one period is configured.
@@ -73,7 +73,6 @@ SENSOR_FIELDS: tuple[tuple[str, str], ...] = (
     ("vat", "money"),
     ("gross_kwh", "energy"),
     ("net_kwh", "energy"),
-    ("exported_kwh", "energy"),
     ("offset_kwh", "energy"),
     ("fuel_rate_c", "rate"),
     ("production_rate", "prate"),
