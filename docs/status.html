@@ -49,7 +49,7 @@
 <header>
   <h1>EAC (ΑΗΚ) Home Assistant Integration</h1>
   <div class="sub">Status &amp; engineering notes &nbsp;·&nbsp;
-    <span class="pill ver">v0.1.13</span> &nbsp;·&nbsp; updated 2026-05-30 &nbsp;·&nbsp;
+    <span class="pill ver">v0.1.14</span> &nbsp;·&nbsp; updated 2026-05-30 &nbsp;·&nbsp;
     repo: <code>andreas16700/eac_integration</code></div>
 </header>
 
@@ -150,6 +150,8 @@ network/ancillary/PSO only — exempt from production, fuel adjustment and RES f
   <li><strong>Energy reads:</strong> meter reading = statistics <code>state</code>; energy in a window = <code>state(end) − state(start)</code> (use <code>state</code>, not summed <code>change</code>, which is noisy on real meters).</li>
   <li><strong>Net metering:</strong> <code>net = gross − exported</code>, no clamp; the total legitimately falls (even negative) when exporting more than importing.</li>
   <li><strong>Data realities on this install:</strong> the configured "export" sensor was <code>sensor.solax_total_yield</code> (solar <em>production</em>, not grid export); the source consumption meter's long-term statistics begin only 2026-03-05.</li>
+  <li><strong>Shared calc.</strong> The per-point bill (<code>compute_bill_series</code>) and the period-start baseline (<code>reading_at_start</code>, “reading at start else 0”) live in <code>billing.py</code> and are used by BOTH the integration and the standalone CLI (<code>scripts/eac_backfill.py</code>) — identical inputs, identical outputs.</li>
+  <li><strong>Manual CLI.</strong> <code>scripts/eac_backfill.py</code> runs inside the HA container, computes 5-minute bill points from the recorder statistics and inserts <code>states</code> directly — backfills the current day with no HA restart.</li>
 </ul>
 
 <h2>7. Next steps</h2>

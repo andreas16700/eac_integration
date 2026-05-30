@@ -17,6 +17,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
+from . import billing
 from .billing import BillResult, Tariff, calculate_bill
 from .const import (
     CONF_CONSUMPTION,
@@ -211,86 +212,35 @@ class EacCoordinator(DataUpdateCoordinator):
         today = dt_util.now().date()
         today_start = dt_util.start_of_local_day(today)
 
-        def _bill(g: float, x: float) -> BillResult:
-            return calculate_bill(
-                g, x, rates["fuel_c"], production_rate=rates["production"], tariff=tariff
-            )
+        # Read the meters as (ts, reading, change) buckets — past as whole days,
+        # today hourly, today also at 5-min for the state backfill. gross/net and
+        # the bill are computed by the SHARED billing.compute_bill_series — the
+        # exact same function (and inputs) the standalone CLI uses.
+        async def _series(entity, period, a, b):
+            return await async_state_series(self.hass, entity, a, b, period) if entity else []
 
-        # Per-bucket meter readings — past as whole days, today as hours. For each
-        # bucket: gross = consumption(bucket) − consumption(start);
-        # exported = export(bucket) − export(start); net = gross − exported;
-        # point = calculate_bill(gross, net). Values follow the sensors and may
-        # rise or fall (net drops on solar-export days).
-        cons_past = await async_state_series(
-            self.hass, self.consumption_entity, start_dt, today_start, "day"
-        )
-        cons_today = await async_state_series(
-            self.hass, self.consumption_entity, today_start, end_dt, "hour"
-        )
+        cons_past = await _series(self.consumption_entity, "day", start_dt, today_start)
+        cons_today = await _series(self.consumption_entity, "hour", today_start, end_dt)
+        cons5 = await _series(self.consumption_entity, "5minute", today_start, end_dt)
         if not cons_past and not cons_today:
             return
-        cfb = (cons_past or cons_today)[0]
-        cbase = cfb[1] - cfb[2]  # consumption reading at the period start
+        exp_past = await _series(self.export_entity, "day", start_dt, today_start)
+        exp_today = await _series(self.export_entity, "hour", today_start, end_dt)
+        exp5 = await _series(self.export_entity, "5minute", today_start, end_dt)
 
-        exp_map: dict[datetime, float] = {}
-        ebase = 0.0
-        if self.export_entity:
-            exp_rows = await async_state_series(
-                self.hass, self.export_entity, start_dt, today_start, "day"
-            ) + await async_state_series(
-                self.hass, self.export_entity, today_start, end_dt, "hour"
-            )
-            if exp_rows:
-                ebase = exp_rows[0][1] - exp_rows[0][2]
-                exp_map = {t: s for t, s, _ in exp_rows}
-
-        prev_exp_reading: float | None = None
-
-        def _row(when: datetime, cons_reading: float) -> tuple[datetime, BillResult]:
-            nonlocal prev_exp_reading
-            gross = cons_reading - cbase
-            exported = 0.0
-            if self.export_entity:
-                if when in exp_map:
-                    prev_exp_reading = exp_map[when]
-                if prev_exp_reading is not None:
-                    exported = prev_exp_reading - ebase
-            return when, _bill(gross, self._net(gross, exported))
-
-        day_series = [_row(t, s) for t, s, _ in cons_past]
-        hour_series = [_row(t, s) for t, s, _ in cons_today]
+        gbase = billing.reading_at_start(cons_past or cons_today, start_dt)
+        ebase = billing.reading_at_start(exp_past or exp_today or exp5, start_dt)
+        fc, pr = rates["fuel_c"], rates["production"]
+        day_series = billing.compute_bill_series(cons_past, exp_past, fc, pr, tariff, gbase=gbase, ebase=ebase)
+        hour_series = billing.compute_bill_series(cons_today, exp_today, fc, pr, tariff, gbase=gbase, ebase=ebase)
+        min5_series = billing.compute_bill_series(cons5, exp5, fc, pr, tariff, gbase=gbase, ebase=ebase)
+        today_states = min5_series or hour_series
 
         if not day_series and not hour_series:
             return
 
-        # 5-minute series for TODAY — used for the STATE backfill (the History tab
-        # renders states; today is wanted at 5-minute resolution, not hourly).
-        cons5 = await async_state_series(
-            self.hass, self.consumption_entity, today_start, end_dt, "5minute"
-        )
-        exp5: dict[datetime, float] = {}
-        if self.export_entity:
-            exp5 = {
-                t: s
-                for t, s, _ in await async_state_series(
-                    self.hass, self.export_entity, today_start, end_dt, "5minute"
-                )
-            }
-        prev_e5: float | None = None
-        min5_series: list[tuple[datetime, BillResult]] = []
-        for t, s, _ in cons5:
-            gross = s - cbase
-            exported = 0.0
-            if self.export_entity:
-                if t in exp5:
-                    prev_e5 = exp5[t]
-                if prev_e5 is not None:
-                    exported = prev_e5 - ebase
-            min5_series.append((t, _bill(gross, self._net(gross, exported))))
-        today_states = min5_series or hour_series
-
         import_daily = self._backfilled_day != today
-        baseline = (day_series or hour_series)[0][1]
+        first_bill = (day_series or hour_series)[0][1]
         registry = er.async_get(self.hass)
         resolved = False
         for key, unit in _CUMULATIVE.items():
@@ -300,7 +250,7 @@ class EacCoordinator(DataUpdateCoordinator):
             if not stat_id:
                 continue  # entity not registered yet; picked up on next refresh
             resolved = True
-            first = getattr(baseline, key)
+            first = getattr(first_bill, key)
             source = (day_series if import_daily else []) + hour_series
             rows = [
                 StatisticData(

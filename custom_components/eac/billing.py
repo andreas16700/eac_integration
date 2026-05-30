@@ -14,6 +14,7 @@ net imported energy only. The total can rise or fall as net imported changes.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields
+from datetime import timedelta
 
 
 @dataclass(frozen=True)
@@ -118,3 +119,62 @@ def calculate_bill(
         vat=vat,
         total=total,
     )
+
+
+def baseline(series: list) -> float:
+    """Reading at the start of the first bucket = state − change of bucket 0."""
+    return series[0][1] - series[0][2] if series else 0.0
+
+
+def reading_at_start(series: list, start, tol_hours: float = 36.0) -> float:
+    """Cumulative meter reading at the period start, else 0.
+
+    If the meter has data at (within ``tol_hours`` of) the period start, return
+    its reading there (first bucket's state − change). Otherwise the meter had no
+    reading at the start (e.g. solar added mid-period) → treat as 0.
+    ``series`` is ascending (key, reading, change) with key a datetime.
+    """
+    if series and series[0][0] <= start + timedelta(hours=tol_hours):
+        return series[0][1] - series[0][2]
+    return 0.0
+
+
+def compute_bill_series(
+    cons: list,
+    exp: list,
+    fuel_rate_c: float,
+    production_rate: float | None,
+    tariff: Tariff | None = None,
+    *,
+    gbase: float | None = None,
+    ebase: float | None = None,
+) -> list:
+    """Bill at each point, from cumulative-meter buckets — the single source of
+    truth used by both the live integration and the standalone CLI.
+
+    ``cons`` / ``exp`` are ascending lists of ``(key, reading, change)`` where
+    ``key`` is the bucket's timestamp. For each consumption point:
+        gross = reading − gbase
+        net   = gross − (latest export reading ≤ key − ebase)
+    Baselines default to the first bucket's reading at its start. Returns a list
+    of ``(key, BillResult)``.
+    """
+    if not cons:
+        return []
+    if gbase is None:
+        gbase = baseline(cons)
+    if ebase is None:
+        ebase = baseline(exp)
+    exp_at = {k: r for k, r, _ in exp}
+    out = []
+    last_e = ebase
+    for key, reading, _ in cons:
+        gross = reading - gbase
+        if key in exp_at:
+            last_e = exp_at[key]
+        net = gross - (last_e - ebase)
+        out.append(
+            (key, calculate_bill(gross, net, fuel_rate_c,
+                                 production_rate=production_rate, tariff=tariff))
+        )
+    return out

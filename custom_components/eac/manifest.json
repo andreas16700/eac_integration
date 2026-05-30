@@ -1,7 +1,7 @@
 {
   "domain": "eac",
   "name": "EAC (Electricity Authority of Cyprus)",
-  "version": "0.1.0",
+  "version": "0.1.14",
   "config_flow": true,
   "documentation": "https://github.com/andreas16700/eac_integration",
   "issue_tracker": "https://github.com/andreas16700/eac_integration/issues",
