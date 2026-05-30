@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from .billing import BillResult, Tariff, calculate_bill
+from .billing import BillResult, Tariff, calculate_bill, reading_at_start
 from .const import (
     CONF_CONSUMPTION,
     CONF_EXPORT,
@@ -30,7 +30,7 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .rates import resolve_month_rates
-from .recorder_util import async_meter_delta
+from .recorder_util import async_meter_delta, async_state_series
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -223,13 +223,20 @@ class EacCoordinator(DataUpdateCoordinator):
                 ),
             )
 
+        # Export offset = the meter's reading AT the period start, or 0 when it has
+        # no reading there (e.g. solar installed mid-period: it produced nothing
+        # before it existed, so all recorded export counts). This mirrors the CLI
+        # exactly (billing.reading_at_start). async_meter_delta would instead anchor
+        # the baseline at the first in-window bucket and silently drop the export
+        # recorded before then — the source of the ~€1 gap against the CLI line.
         exported = 0.0
         if self.export_entity:
-            exp_usage = await async_meter_delta(
-                self.hass, self.export_entity, start_dt, end_dt
+            exp_series = await async_state_series(
+                self.hass, self.export_entity, start_dt, end_dt, "hour"
             )
-            if exp_usage is not None:
-                exported = exp_usage.total
+            if exp_series:
+                ebase = reading_at_start(exp_series, start_dt)
+                exported = exp_series[-1][1] - ebase
         net = self._net(gross_usage.total, exported)
 
         # Partial coverage: statistics that begin after the period start mean the

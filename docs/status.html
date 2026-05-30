@@ -49,7 +49,7 @@
 <header>
   <h1>EAC (ΑΗΚ) Home Assistant Integration</h1>
   <div class="sub">Status &amp; engineering notes &nbsp;·&nbsp;
-    <span class="pill ver">v0.1.15</span> &nbsp;·&nbsp; updated 2026-05-30 &nbsp;·&nbsp;
+    <span class="pill ver">v0.1.16</span> &nbsp;·&nbsp; updated 2026-05-30 &nbsp;·&nbsp;
     repo: <code>andreas16700/eac_integration</code></div>
 </header>
 
@@ -96,7 +96,8 @@ network/ancillary/PSO only — exempt from production, fuel adjustment and RES f
   <li><strong>Pure, testable core.</strong> <code>billing.py</code> has no HA deps — <code>calculate_bill(gross, net, fuel_c, production_rate, tariff)</code>. Unit-tested standalone.</li>
   <li><strong>Bundled rates.</strong> <code>rates_data.json</code> holds the EAC fuel-adjustment table (ΧΑΜΗΛΗ, bimonthly, 2013–2026, revised values), extracted from the official spreadsheet. Per-month overrides for fuel &amp; production live in options.</li>
   <li><strong>Meter reads.</strong> Energy over a window is read from <em>long-term statistics</em> (not raw states), so historical periods work after raw states are purged. Per-bucket value = the meter's recorded <code>state</code> at that bucket minus its reading at the period start.</li>
-  <li><strong>Integration is compute-only (v0.1.15).</strong> The integration computes the current bill and exposes the sensors — nothing more. It no longer imports statistics or writes <code>states</code>. Recording the per-period 5-minute history is done entirely by the standalone CLI, so there is exactly one writer and no competing values.</li>
+  <li><strong>Integration is compute-only (v0.1.15).</strong> The integration computes the current bill and exposes the sensors — nothing more. It no longer imports statistics or writes <code>states</code>. Recording the per-period 5-minute history is done entirely by the standalone CLI, so there is exactly one writer of history.</li>
+  <li><strong>Same offsets as the CLI (v0.1.16).</strong> The live sensor value uses the identical offset rule as the CLI: the export offset is the meter's reading <em>at the period start</em>, or <strong>0</strong> when it has none (solar installed mid-period produced nothing before it existed, so all recorded export counts) — via the shared <code>billing.reading_at_start</code>. Previously the live value came from <code>async_meter_delta</code>, which anchored the export baseline at the first in-window bucket and silently dropped the export before it, overstating the bill by ~€1 and showing as spikes above the CLI line. The two now agree to the cent, so HA's recording of the live value lands on the line.</li>
 </ul>
 
 <h2 id="open">4. History tab vs. statistics — resolved (v0.1.13), then moved to the CLI (v0.1.15)</h2>
