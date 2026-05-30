@@ -49,7 +49,7 @@
 <header>
   <h1>EAC (ΑΗΚ) Home Assistant Integration</h1>
   <div class="sub">Status &amp; engineering notes &nbsp;·&nbsp;
-    <span class="pill ver">v0.1.18</span> &nbsp;·&nbsp; updated 2026-05-30 &nbsp;·&nbsp;
+    <span class="pill ver">v0.1.19</span> &nbsp;·&nbsp; updated 2026-05-30 &nbsp;·&nbsp;
     repo: <code>andreas16700/eac_integration</code></div>
 </header>
 
@@ -99,6 +99,7 @@ network/ancillary/PSO only — exempt from production, fuel adjustment and RES f
   <li><strong>Integration is compute-only (v0.1.15).</strong> The integration computes the current bill and exposes the sensors — nothing more. It no longer imports statistics or writes <code>states</code>. Recording the per-period 5-minute history is done entirely by the standalone CLI, so there is exactly one writer of history.</li>
   <li><strong>One simple calc, same as the CLI (v0.1.17).</strong> The bill at any point needs only the two offsets and the period's multipliers: <code>gross = consumption_now − consumption_offset</code>, <code>net = gross − (export_now − export_offset)</code>. Each offset is the meter's reading <em>at the period start</em>, or <strong>0</strong> when it has none there (solar installed mid-period produced nothing before it existed, so all its recorded export counts) — via the shared <code>billing.reading_at_start</code>. The old <code>async_meter_delta</code> helper (a separate "meter delta over a window" with its own baseline that anchored at the first in-window bucket) is removed: it silently dropped the solar export recorded before that bucket, overstating the bill by ~€1.20 and showing as spikes above the CLI line. Live value and CLI line now agree to the cent.</li>
   <li><strong>5-minute live value (v0.1.18).</strong> For the current period the latest reading is taken from <strong>5-minute</strong> statistics (the offset still from hourly stats, which are always retained), so the value refreshes every 5&nbsp;min and tracks the live meters instead of lagging up to an hour on the last complete hourly bucket. Past periods stay on hourly (fixed, cheaper).</li>
+  <li><strong>Bill-order display (v0.1.19).</strong> HA's device page and overview sort entities alphabetically by name, ignoring creation order. The sensor names are therefore zero-padded-numbered in the exact order of a real EAC bill (01 Production → 02 Network use → … → 12 VAT → 13 Total, then 14–18 for the kWh/rate inputs), so they display in bill order everywhere.</li>
 </ul>
 
 <h2 id="open">4. History tab vs. statistics — resolved (v0.1.13), then moved to the CLI (v0.1.15)</h2>

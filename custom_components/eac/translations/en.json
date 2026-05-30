@@ -44,7 +44,9 @@
       },
       "edit_select": {
         "title": "Edit billing period",
-        "data": { "period": "Period" }
+        "data": {
+          "period": "Period"
+        }
       },
       "edit_period": {
         "title": "Edit billing period",
@@ -59,7 +61,9 @@
       },
       "remove_select": {
         "title": "Remove billing period",
-        "data": { "period": "Period" }
+        "data": {
+          "period": "Period"
+        }
       },
       "month_rates": {
         "title": "Monthly rates",
@@ -88,24 +92,60 @@
   },
   "entity": {
     "sensor": {
-      "total": { "name": "Total" },
-      "production": { "name": "Production" },
-      "network": { "name": "Network use" },
-      "ancillary": { "name": "Ancillary services" },
-      "meter_data": { "name": "Metering data management" },
-      "supply": { "name": "Supply" },
-      "subtotal_base": { "name": "Subtotal at base fuel price" },
-      "fuel_adjustment": { "name": "Fuel adjustment" },
-      "pso": { "name": "PSO" },
-      "subtotal_pre_vat": { "name": "Subtotal before VAT" },
-      "res_fund": { "name": "RES & EE fund" },
-      "subtotal_ex_vat": { "name": "Subtotal excl. VAT" },
-      "vat": { "name": "VAT" },
-      "gross_kwh": { "name": "Gross imported" },
-      "net_kwh": { "name": "Net imported" },
-      "offset_kwh": { "name": "Net-metering offset" },
-      "fuel_rate_c": { "name": "Fuel adjustment rate" },
-      "production_rate": { "name": "Production rate" }
+      "total": {
+        "name": "13 Total"
+      },
+      "production": {
+        "name": "01 Production"
+      },
+      "network": {
+        "name": "02 Network use"
+      },
+      "ancillary": {
+        "name": "03 Ancillary services"
+      },
+      "meter_data": {
+        "name": "04 Metering data management"
+      },
+      "supply": {
+        "name": "05 Supply"
+      },
+      "subtotal_base": {
+        "name": "06 Subtotal at base fuel price"
+      },
+      "fuel_adjustment": {
+        "name": "07 Fuel adjustment"
+      },
+      "pso": {
+        "name": "08 PSO"
+      },
+      "subtotal_pre_vat": {
+        "name": "09 Subtotal before VAT"
+      },
+      "res_fund": {
+        "name": "10 RES & EE fund"
+      },
+      "subtotal_ex_vat": {
+        "name": "11 Subtotal excl. VAT"
+      },
+      "vat": {
+        "name": "12 VAT"
+      },
+      "gross_kwh": {
+        "name": "14 Gross imported"
+      },
+      "net_kwh": {
+        "name": "15 Net imported"
+      },
+      "offset_kwh": {
+        "name": "16 Net-metering offset"
+      },
+      "fuel_rate_c": {
+        "name": "17 Fuel adjustment rate"
+      },
+      "production_rate": {
+        "name": "18 Production rate"
+      }
     }
   }
 }
