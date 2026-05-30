@@ -49,26 +49,41 @@ async def async_consumption_between(
 
     def _fetch() -> MeterUsage | None:
         rows = statistics.statistics_during_period(
-            hass, start, end, {statistic_id}, "hour", None, {"change"}
+            hass, start, end, {statistic_id}, "hour", None, {"sum", "change"}
         )
-        series = rows.get(statistic_id)
+        series = [r for r in (rows.get(statistic_id) or []) if r.get("sum") is not None]
         if not series:
             return None
-        total = 0.0
-        first = last = None
-        for row in series:
-            change = row.get("change")
-            if change is None:
-                continue
-            total += float(change)
-            when = _to_dt(row["start"])
-            if first is None:
-                first = when
-            last = when
-        if first is None:
-            return None
-        # Guard against a net-negative window from a meter reset mid-period.
-        return MeterUsage(total=max(0.0, total), data_start=first, data_end=last)
+        # Use the monotonic cumulative `sum` (reset-corrected) rather than summing
+        # per-bucket `change`, which can drift on noisy meters. Energy in the
+        # window = sum(last) − sum(at period start). The first bucket's
+        # (sum − change) is the cumulative value at the window start.
+        first, last = series[0], series[-1]
+        baseline = float(first["sum"]) - float(first.get("change") or 0.0)
+        total = float(last["sum"]) - baseline
+        return MeterUsage(
+            total=max(0.0, total),
+            data_start=_to_dt(first["start"]),
+            data_end=_to_dt(last["start"]),
+        )
+
+    return await get_instance(hass).async_add_executor_job(_fetch)
+
+
+async def async_sum_series(
+    hass: HomeAssistant, statistic_id: str, start: datetime, end: datetime, period: str
+) -> list[tuple[datetime, float, float]]:
+    """Per-bucket (start, cumulative_sum, change) for ``statistic_id`` in [start, end)."""
+
+    def _fetch() -> list[tuple[datetime, float, float]]:
+        rows = statistics.statistics_during_period(
+            hass, start, end, {statistic_id}, period, None, {"sum", "change"}
+        )
+        return [
+            (_to_dt(r["start"]), float(r["sum"]), float(r.get("change") or 0.0))
+            for r in (rows.get(statistic_id) or [])
+            if r.get("sum") is not None
+        ]
 
     return await get_instance(hass).async_add_executor_job(_fetch)
 

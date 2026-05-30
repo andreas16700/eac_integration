@@ -43,8 +43,7 @@ from .rates import resolve_month_rates
 from .recorder_util import (
     MeterUsage,
     async_consumption_between,
-    async_daily_changes,
-    async_hourly_changes,
+    async_sum_series,
 )
 
 # Bill line items worth a daily history (cumulative over the period).
@@ -215,37 +214,42 @@ class EacCoordinator(DataUpdateCoordinator):
                 g, x, rates["fuel_c"], production_rate=rates["production"], tariff=tariff
             )
 
-        # Past complete days — cumulative bill at the end of each day.
-        gross = exported = 0.0
-        day_series: list[tuple[datetime, BillResult]] = []
-        past = await async_daily_changes(
-            self.hass, self.consumption_entity, start_dt, today_start
+        # Cumulative meter reading (monotonic `sum`) per bucket: past as whole
+        # days, today as hours. gross(bucket) = sum(bucket) − sum(period start),
+        # so the bill is monotonic and day/today join seamlessly.
+        cons_past = await async_sum_series(
+            self.hass, self.consumption_entity, start_dt, today_start, "day"
         )
-        exp_past = (
-            dict(await async_daily_changes(self.hass, self.export_entity, start_dt, today_start))
-            if self.export_entity
-            else {}
+        cons_today = await async_sum_series(
+            self.hass, self.consumption_entity, today_start, end_dt, "hour"
         )
-        for day, change in past:
-            gross += change
-            exported += exp_past.get(day, 0.0)
-            day_series.append((day, _bill(gross, exported)))
+        if not cons_past and not cons_today:
+            return
+        fb = (cons_past or cons_today)[0]
+        base = fb[1] - fb[2]  # cumulative reading at the period start
 
-        # Today — continue cumulating hour by hour up to now.
-        hour_series: list[tuple[datetime, BillResult]] = []
-        today_h = await async_hourly_changes(
-            self.hass, self.consumption_entity, today_start, end_dt
-        )
-        exp_today = (
-            dict(await async_hourly_changes(self.hass, self.export_entity, today_start, end_dt))
-            if self.export_entity
-            else {}
-        )
-        g, x = gross, exported
-        for hour, change in today_h:
-            g += change
-            x += exp_today.get(hour, 0.0)
-            hour_series.append((hour, _bill(g, x)))
+        exp_map: dict[datetime, float] = {}
+        exp_base = 0.0
+        if self.export_entity:
+            exp_rows = await async_sum_series(
+                self.hass, self.export_entity, start_dt, today_start, "day"
+            ) + await async_sum_series(
+                self.hass, self.export_entity, today_start, end_dt, "hour"
+            )
+            if exp_rows:
+                exp_base = exp_rows[0][1] - exp_rows[0][2]
+                exp_map = {t: s for t, s, _ in exp_rows}
+
+        prev_exp = 0.0
+
+        def _row(when: datetime, total_sum: float) -> tuple[datetime, BillResult]:
+            nonlocal prev_exp
+            if when in exp_map:
+                prev_exp = max(0.0, exp_map[when] - exp_base)
+            return when, _bill(max(0.0, total_sum - base), prev_exp)
+
+        day_series = [_row(t, s) for t, s, _ in cons_past]
+        hour_series = [_row(t, s) for t, s, _ in cons_today]
 
         if not day_series and not hour_series:
             return
