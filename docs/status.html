@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EAC Integration — Status &amp; Engineering Notes</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e222d; --ink:#e6e8ee; --muted:#9aa3b2;
+    --line:#2a2f3c; --accent:#4f9cf9; --good:#3fb950; --warn:#d29922; --bad:#f85149;
+    --mono:"SF Mono",ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:980px;margin:0 auto;padding:40px 24px 96px;}
+  header h1{font-size:28px;margin:0 0 4px;}
+  header .sub{color:var(--muted);font-size:14px;}
+  .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600;
+    border:1px solid var(--line);}
+  .pill.ver{background:#1b2740;border-color:#274;color:#8ab4f8}
+  h2{font-size:20px;margin:40px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line);}
+  h3{font-size:16px;margin:24px 0 8px;}
+  p{margin:10px 0;}
+  code{font-family:var(--mono);font-size:13px;background:var(--panel2);padding:1px 5px;border-radius:4px;}
+  pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;
+    font-family:var(--mono);font-size:12.5px;line-height:1.5;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin:14px 0;}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px;}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top;}
+  th{color:var(--muted);font-weight:600;}
+  .ok{color:var(--good)} .wn{color:var(--warn)} .no{color:var(--bad)} .mut{color:var(--muted)}
+  ul{margin:10px 0;padding-left:22px;} li{margin:6px 0;}
+  .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid var(--line);}
+  .tag.done{color:var(--good);border-color:#264d2e}
+  .tag.open{color:var(--warn);border-color:#4d3f1a}
+  .tag.research{color:var(--accent);border-color:#22416b}
+  .kv{display:grid;grid-template-columns:160px 1fr;gap:4px 16px;font-size:13.5px;}
+  .kv div:nth-child(odd){color:var(--muted)}
+  blockquote{margin:12px 0;padding:8px 16px;border-left:3px solid var(--accent);background:var(--panel2);
+    color:var(--muted);}
+  .small{font-size:12.5px;color:var(--muted);}
+  hr{border:0;border-top:1px solid var(--line);margin:28px 0;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>EAC (ΑΗΚ) Home Assistant Integration</h1>
+  <div class="sub">Status &amp; engineering notes &nbsp;·&nbsp;
+    <span class="pill ver">v0.1.11</span> &nbsp;·&nbsp; updated 2026-05-30 &nbsp;·&nbsp;
+    repo: <code>andreas16700/eac_integration</code></div>
+</header>
+
+<h2>1. What this integration does</h2>
+<p>Computes an itemised EAC electricity bill (Tariff&nbsp;01, residential / low voltage) with
+net-metering, from two cumulative energy meters, and exposes every bill line item as a sensor.
+A <em>billing period</em> has a start and end; its bill items are sensors grouped under a device.</p>
+
+<div class="card">
+<h3>Model (the whole thing)</h3>
+<div class="kv">
+  <div>Inputs</div><div><strong>Consumption / grid-import meter</strong> (= gross imported) + <strong>solar export meter</strong> (optional), both cumulative kWh.</div>
+  <div>Gross / net</div><div><code>gross = consumption(end) − consumption(start)</code>; <code>exported = export(end) − export(start)</code>; <code>net = gross − exported</code> (may be negative on net-export days).</div>
+  <div>Bill</div><div><code>bill = f(gross, net, period multipliers)</code> — see formulas below.</div>
+  <div>Multipliers</div><div>Per the period's <em>rate month</em> (default = end month): fuel adjustment (¢/kWh, bundled EAC table 2013–2026 + per-month override) and production (€/kWh, tariff default 0.1789, per-month overridable).</div>
+</div>
+<table>
+  <tr><th>Item</th><th>Basis</th><th>Formula</th></tr>
+  <tr><td>Production</td><td>net</td><td><code>net × production_rate</code></td></tr>
+  <tr><td>Fuel adjustment</td><td>net</td><td><code>net × fuel_c/100</code></td></tr>
+  <tr><td>RES &amp; EE fund</td><td>net</td><td><code>net × 0.005</code> (outside VAT)</td></tr>
+  <tr><td>Network use</td><td>gross</td><td><code>gross × 0.0366</code> <span class="mut">(municipality-specific)</span></td></tr>
+  <tr><td>Ancillary</td><td>gross</td><td><code>gross × 0.0065</code></td></tr>
+  <tr><td>PSO</td><td>gross</td><td><code>gross × 0.00051</code></td></tr>
+  <tr><td>Metering / Supply</td><td>fixed</td><td><code>0.96 + 6.88</code></td></tr>
+  <tr><td>VAT</td><td>—</td><td><code>5% × (subtotal incl. fuel+PSO, excl. RES)</code></td></tr>
+</table>
+<p class="small">Net-metering rule: the offset (<code>gross − net</code>, the export-cancelled portion) is billed for
+network/ancillary/PSO only — exempt from production, fuel adjustment and RES fund.</p>
+</div>
+
+<h2>2. Current status</h2>
+<table>
+  <tr><th>Area</th><th>State</th><th>Notes</th></tr>
+  <tr><td>Loads / config flow / options / reconfigure</td><td><span class="tag done">working</span></td><td>Verified on HA 2026.2. Config flow, options (periods / monthly rates / tariff), reconfigure all pass.</td></tr>
+  <tr><td>Bill math</td><td><span class="tag done">working</span></td><td>Matches hand-computed CLI values to the cent (e.g. gross 1005 / net 457 → €153.80).</td></tr>
+  <tr><td>Periods + auto "current" period</td><td><span class="tag done">working</span></td><td>Current period start = latest configured end, end = today; recomputed every 5 min.</td></tr>
+  <tr><td>Statistics backfill (per-sensor)</td><td><span class="tag done">working</span></td><td>All 19 current-period sensors populated: today hourly + ~80 days daily. Verified in the live recorder.</td></tr>
+  <tr><td>Show backfilled <em>today</em> in the History <em>tab</em></td><td><span class="tag research">researching</span></td><td><strong>The open problem.</strong> See §4.</td></tr>
+  <tr><td>Test suite</td><td><span class="tag done">17/17</span></td><td>7 pure billing + 10 runtime (pytest-homeassistant-custom-component).</td></tr>
+</table>
+
+<h2>3. Approach so far</h2>
+<ul>
+  <li><strong>Pure, testable core.</strong> <code>billing.py</code> has no HA deps — <code>calculate_bill(gross, net, fuel_c, production_rate, tariff)</code>. Unit-tested standalone.</li>
+  <li><strong>Bundled rates.</strong> <code>rates_data.json</code> holds the EAC fuel-adjustment table (ΧΑΜΗΛΗ, bimonthly, 2013–2026, revised values), extracted from the official spreadsheet. Per-month overrides for fuel &amp; production live in options.</li>
+  <li><strong>Meter reads.</strong> Energy over a window is read from <em>long-term statistics</em> (not raw states), so historical periods work after raw states are purged. Per-bucket value = the meter's recorded <code>state</code> at that bucket minus its reading at the period start.</li>
+  <li><strong>Current-period history.</strong> Each refresh recomputes the bill for every day from period start → today and writes it as each sensor's own long-term statistic (<code>async_import_statistics</code>, <code>source="recorder"</code>, <code>state_class=total</code>): past days as <em>daily</em> (end-of-day) points, today <em>hour-by-hour</em>. Idempotent.</li>
+</ul>
+
+<h2 id="open">4. The open problem — History tab vs. statistics</h2>
+<div class="card">
+<p><strong>Goal:</strong> the bill-item sensors should show their full per-period curve — including <em>today, hourly</em> — in the entity <strong>History tab</strong>.</p>
+<p><strong>What's verified in the live recorder right now:</strong></p>
+<table>
+  <tr><th>Check (sensor.eac_current_total)</th><th>Result</th></tr>
+  <tr><td>Long-term statistics — today (hourly)</td><td class="ok">13 points, 00:00→12:00 ✓ (all 19 sensors)</td></tr>
+  <tr><td>Long-term statistics — whole period (daily)</td><td class="ok">~80 days back to Mar 12 ✓</td></tr>
+  <tr><td>STATE rows before ~May 29 (any day: Mar, mid-May, late-May)</td><td class="no">0 — none exist</td></tr>
+  <tr><td>STATE rows today</td><td class="wn">sparse: ~00:00, then a gap, then from ~11:20 (restart)</td></tr>
+</table>
+<p><strong>Root cause (verified, not assumed):</strong></p>
+<ul>
+  <li>The History card/tab draws recorded <strong>states</strong> for a day when states exist, and falls back to <strong>long-term statistics</strong> only for days that have <em>no</em> states.</li>
+  <li>Old days have <em>zero</em> state rows → History shows the backfilled <strong>statistics</strong> → "past daily works".</li>
+  <li>Today has sparse states (and a morning gap, because the integration was <em>down</em> 00:00→11:20 under the broken 0.1.9) → History shows those <strong>states</strong>, hiding the (correct) backfilled hourly statistics.</li>
+</ul>
+<blockquote>So nothing was ever "backfilled as states" — it has always been statistics. Old days display them because they lack states; today does not because it has (sparse) states that take precedence.</blockquote>
+<p><strong>Constraint:</strong> Home Assistant exposes <code>async_import_statistics</code> for statistics but <em>no public API to inject historical states</em>. Making today's backfill appear in the History tab therefore requires either (a) writing historical <code>State</code> rows into the recorder directly, or (b) a supported way to make History fall back to statistics for the live entity. <span class="tag research">A multi-agent web-research workflow is running to determine which is real, viable and purge-safe; this section will be updated with the verdict + plan.</span></p>
+</div>
+
+<h2>5. Issues faced</h2>
+<ul>
+  <li><span class="no">Shipped 0.1.0 without ever loading it in HA.</span> Caused “Config flow could not be loaded: Invalid handler specified” — a stale <code>P_FUEL_OVERRIDE</code> import broke package import so the flow handler never registered.</li>
+  <li><code>DataUpdateCoordinator</code> now requires <code>config_entry</code>; <code>NumberSelector</code> rejects <code>step&lt;0.001</code> (use <code>step="any"</code>); <code>DateSelector</code> returns ISO strings (JSON-safe).</li>
+  <li><span class="no">Repeated model churn / over-engineering.</span> consumption+export → "gross+net direct inputs" → back to consumption+export; a <code>min(gross,export)</code> clamp added then removed; a "monotonic sum" change that wrongly hid legitimate net-export drops.</li>
+  <li><span class="no">Broken 0.1.9</span> (renamed config keys → <code>KeyError</code>) took the integration <em>down</em> for hours — that is the source of today's state gap.</li>
+  <li><span class="no">Behavioral failure:</span> repeatedly declared "done" after checking only that DB rows exist, instead of verifying the actual end-goal (the user seeing the data on the sensors). The remaining History-tab issue went undiagnosed for many iterations because of this.</li>
+</ul>
+
+<h2>6. Insights gained (Home Assistant recorder)</h2>
+<ul>
+  <li><strong>States cannot be backfilled</strong> via any public API; only long-term statistics (<code>async_import_statistics</code> / <code>async_add_external_statistics</code>).</li>
+  <li><strong>History rendering:</strong> states-if-present, else long-term statistics. This is why backfilled statistics show for stateless (old/purged) days but not for days with live states.</li>
+  <li><strong>Retention:</strong> recorder default <code>purge_keep_days = 10</code> for states; long-term statistics are hourly and kept indefinitely, aggregated to day/week/month on query.</li>
+  <li><strong>statistics_during_period:</strong> <code>period="hour"|"day"</code> reads long-term; <code>"5minute"</code> reads short-term.</li>
+  <li><strong>Energy reads:</strong> meter reading = statistics <code>state</code>; energy in a window = <code>state(end) − state(start)</code> (use <code>state</code>, not summed <code>change</code>, which is noisy on real meters).</li>
+  <li><strong>Net metering:</strong> <code>net = gross − exported</code>, no clamp; the total legitimately falls (even negative) when exporting more than importing.</li>
+  <li><strong>Data realities on this install:</strong> the configured "export" sensor was <code>sensor.solax_total_yield</code> (solar <em>production</em>, not grid export); the source consumption meter's long-term statistics begin only 2026-03-05.</li>
+</ul>
+
+<h2>7. Next steps</h2>
+<ul>
+  <li><span class="tag research">in&nbsp;progress</span> Resolve the History-tab display of today's backfill (research workflow → verdict → implement).</li>
+  <li><span class="tag open">queued</span> Move <code>rates_data.json</code> load off the event loop (recorder flags it as a blocking call).</li>
+  <li><span class="tag open">queued</span> Confirm the intended export sensor (grid export vs. solar yield) with the user.</li>
+</ul>
+
+<hr>
+<p class="small">This document is the source of truth for project status. It is HTML by request. Releases are tagged on
+<code>main</code>; see GitHub for the changelog.</p>
+
+</div>
+</body>
+</html>
