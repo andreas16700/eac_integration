@@ -5,16 +5,16 @@
         "title": "EAC bill",
         "description": "Choose the cumulative energy meters (kWh). They must have long-term statistics (state_class total/total_increasing).",
         "data": {
-          "gross_entity": "Gross imported energy meter (cumulative kWh)",
-          "net_entity": "Net imported energy meter (optional; defaults to gross)"
+          "consumption_entity": "Consumption / grid-import meter (cumulative kWh)",
+          "export_entity": "Solar export meter (optional, cumulative kWh)"
         }
       },
       "reconfigure": {
         "title": "Change EAC meters",
         "description": "Pick the source meters. Existing billing periods are kept.",
         "data": {
-          "gross_entity": "Gross imported energy meter (cumulative kWh)",
-          "net_entity": "Net imported energy meter (optional; defaults to gross)"
+          "consumption_entity": "Consumption / grid-import meter (cumulative kWh)",
+          "export_entity": "Solar export meter (optional, cumulative kWh)"
         }
       }
     }
@@ -39,7 +39,7 @@
           "end": "Period end",
           "rate_month": "Rate month YYYY-MM (blank = end month)",
           "manual_gross_kwh": "Manual gross imported kWh (blank = read from meter statistics)",
-          "manual_net_kwh": "Manual net imported kWh (used with manual gross)"
+          "manual_export_kwh": "Manual solar export kWh (used with manual gross)"
         }
       },
       "edit_select": {
@@ -54,7 +54,7 @@
           "end": "Period end",
           "rate_month": "Rate month YYYY-MM (blank = end month)",
           "manual_gross_kwh": "Manual gross imported kWh (blank = read from meter statistics)",
-          "manual_net_kwh": "Manual net imported kWh (used with manual gross)"
+          "manual_export_kwh": "Manual solar export kWh (used with manual gross)"
         }
       },
       "remove_select": {

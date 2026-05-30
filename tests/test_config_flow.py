@@ -33,7 +33,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 from custom_components.eac.billing import calculate_bill
 
 from custom_components.eac.const import (
-    CONF_GROSS,
+    CONF_CONSUMPTION,
     CONF_MONTH_RATES,
     CONF_PERIODS,
     CONF_TARIFF,
@@ -45,7 +45,7 @@ def _entry(**options) -> MockConfigEntry:
     base = {CONF_PERIODS: [], CONF_TARIFF: {}, CONF_MONTH_RATES: {}}
     base.update(options)
     return MockConfigEntry(
-        domain=DOMAIN, data={CONF_GROSS: "sensor.grid_import"}, options=base
+        domain=DOMAIN, data={CONF_CONSUMPTION: "sensor.grid_import"}, options=base
     )
 
 
@@ -61,11 +61,11 @@ async def test_user_config_flow(recorder_mock, enable_custom_integrations, hass:
     assert result["type"] == FlowResultType.FORM
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_GROSS: "sensor.grid_import"}
+        result["flow_id"], {CONF_CONSUMPTION: "sensor.grid_import"}
     )
     assert result["type"] == FlowResultType.CREATE_ENTRY
     entry = result["result"]
-    assert entry.data[CONF_GROSS] == "sensor.grid_import"
+    assert entry.data[CONF_CONSUMPTION] == "sensor.grid_import"
     assert entry.options[CONF_PERIODS] == []
     await hass.async_block_till_done()
     await _unload(hass, entry.entry_id)
@@ -157,11 +157,11 @@ async def test_reconfigure_changes_meter(recorder_mock, enable_custom_integratio
     )
     assert result["type"] == FlowResultType.FORM
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_GROSS: "sensor.grid_energy"}
+        result["flow_id"], {CONF_CONSUMPTION: "sensor.grid_energy"}
     )
     assert result["type"] == FlowResultType.ABORT  # update_reload_and_abort
     await hass.async_block_till_done()
-    assert entry.data[CONF_GROSS] == "sensor.grid_energy"
+    assert entry.data[CONF_CONSUMPTION] == "sensor.grid_energy"
     await _unload(hass, entry.entry_id)
 
 
@@ -169,7 +169,7 @@ async def test_manual_override_period(recorder_mock, enable_custom_integrations,
     """A period with manual gross/export computes a bill without any statistics."""
     entry = _entry(**{CONF_PERIODS: [{
         "id": "p1", "name": "Jan-Mar 2026", "start": "2026-01-20", "end": "2026-03-12",
-        "manual_gross_kwh": 732.05, "manual_net_kwh": 676.04,
+        "manual_gross_kwh": 732.05, "manual_export_kwh": 56.01,
     }]})
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
