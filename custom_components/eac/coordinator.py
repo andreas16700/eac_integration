@@ -215,10 +215,11 @@ class EacCoordinator(DataUpdateCoordinator):
         # Each offset is the meter's reading at the period start, or 0 when it has
         # none there (e.g. solar installed mid-period produced nothing before it
         # existed, so all its recorded export counts). Same calc as the CLI.
-        cons = await async_state_series(
-            self.hass, self.consumption_entity, start_dt, end_dt, "hour"
+        is_current = period[P_ID] == CURRENT_ID
+        cons = await self._meter_offset_now(
+            self.consumption_entity, start_dt, end_dt, is_current
         )
-        if not cons:
+        if cons is None:
             return _result(
                 None, complete=False, data_start=None, data_end=None,
                 error=(
@@ -226,20 +227,21 @@ class EacCoordinator(DataUpdateCoordinator):
                     f"in {period[P_START]}..{period[P_END]}"
                 ),
             )
-        gross = cons[-1][1] - reading_at_start(cons, start_dt)
+        gbase, cons_now, data_start, data_end = cons
+        gross = cons_now - gbase
 
         exported = 0.0
         if self.export_entity:
-            exp = await async_state_series(
-                self.hass, self.export_entity, start_dt, end_dt, "hour"
+            exp = await self._meter_offset_now(
+                self.export_entity, start_dt, end_dt, is_current
             )
-            if exp:
-                exported = exp[-1][1] - reading_at_start(exp, start_dt)
+            if exp is not None:
+                ebase, exp_now, _, _ = exp
+                exported = exp_now - ebase
         net = self._net(gross, exported)
 
         # Partial coverage: consumption data that begins after the period start
         # means the early part of the period was never recorded.
-        data_start = cons[0][0]
         complete = data_start <= start_dt + timedelta(hours=2)
         error = None
         if not complete:
@@ -258,6 +260,32 @@ class EacCoordinator(DataUpdateCoordinator):
             bill,
             complete=complete,
             data_start=dt_util.as_local(data_start).isoformat(),
-            data_end=dt_util.as_local(cons[-1][0]).isoformat(),
+            data_end=dt_util.as_local(data_end).isoformat(),
             error=error,
         )
+
+    async def _meter_offset_now(
+        self, entity: str, start_dt: datetime, end_dt: datetime, current: bool
+    ) -> tuple[float, float, datetime, datetime] | None:
+        """(offset, latest_reading, data_start, data_end) for a meter over a period.
+
+        ``offset`` = the meter's reading at the period start, or 0 if it has none
+        there — taken from hourly long-term statistics, which are always retained.
+        ``latest_reading`` is the most recent reading: for the **current** period it
+        must track the live meter, so it comes from 5-minute statistics (hourly lags
+        up to an hour); past periods are fixed, so hourly suffices. Returns None when
+        the meter has no statistics in the period.
+        """
+        hist = await async_state_series(self.hass, entity, start_dt, end_dt, "hour")
+        if not hist:
+            return None
+        offset = reading_at_start(hist, start_dt)
+        latest, data_end = hist[-1][1], hist[-1][0]
+        if current:
+            recent_start = max(start_dt, dt_util.now() - timedelta(hours=6))
+            recent = await async_state_series(
+                self.hass, entity, recent_start, end_dt, "5minute"
+            )
+            if recent:
+                latest, data_end = recent[-1][1], recent[-1][0]
+        return offset, latest, hist[0][0], data_end
