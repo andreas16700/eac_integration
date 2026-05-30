@@ -118,8 +118,8 @@ class EacCoordinator(DataUpdateCoordinator):
 
     @staticmethod
     def _net(gross: float, exported: float) -> float:
-        """Net imported = gross − export, with the offset capped at gross."""
-        return gross - min(gross, max(0.0, exported))
+        """Net imported = gross − exported (may be negative when net-exporting)."""
+        return gross - exported
 
     @property
     def periods(self) -> list[dict]:
@@ -217,7 +217,7 @@ class EacCoordinator(DataUpdateCoordinator):
 
         # Per-bucket meter readings — past as whole days, today as hours. For each
         # bucket: gross = consumption(bucket) − consumption(start);
-        # exported = export(bucket) − export(start); net = gross − min(gross, export);
+        # exported = export(bucket) − export(start); net = gross − exported;
         # point = calculate_bill(gross, net). Values follow the sensors and may
         # rise or fall (net drops on solar-export days).
         cons_past = await async_state_series(
@@ -345,7 +345,7 @@ class EacCoordinator(DataUpdateCoordinator):
             return _result(bill, complete=True, data_start=None, data_end=None, error=None)
 
         # gross = consumption meter delta; exported = export meter delta;
-        # net = gross − min(gross, export).
+        # net = gross − exported.
         gross_usage = await async_meter_delta(
             self.hass, self.consumption_entity, start_dt, end_dt
         )

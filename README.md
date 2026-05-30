@@ -15,9 +15,9 @@ Inputs (config flow) — two cumulative kWh meters:
 - **Solar export meter** — energy exported to the grid. Optional.
 
 From these two the integration derives **gross** (= consumption) and **net
-imported** (= gross − export, with the offset capped at gross), then computes the
-bill from gross, net and the period's multipliers. On solar days export is high,
-so net falls — and the bill falls with it. That's expected.
+imported** (= gross − export), then computes the bill from gross, net and the
+period's multipliers. Net can go negative when you export more than you import,
+and the total falls with it. That's expected.
 
 > **Requirement:** the meter sensors must have a `state_class` so Home Assistant
 > keeps **long-term statistics** for them. The integration reads those statistics
@@ -29,8 +29,7 @@ For each billing period:
 ```
 gross imported = consumption(end) − consumption(start)
 exported       = export(end) − export(start)        # 0 if no export meter
-offset         = min(gross, exported)
-net imported   = gross − offset
+net imported   = gross − exported                   # may be negative
 ```
 
 Billing rules (matching real EAC net-metering bills):
