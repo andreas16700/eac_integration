@@ -88,7 +88,7 @@ network/ancillary/PSO only — exempt from production, fuel adjustment and RES f
   <tr><td>Bill math</td><td><span class="tag done">working</span></td><td>Matches hand-computed CLI values to the cent (e.g. gross 1005 / net 457 → €153.80).</td></tr>
   <tr><td>Periods + auto "current" period</td><td><span class="tag done">working</span></td><td>Current period start = latest configured end, end = today; recomputed every 5 min.</td></tr>
   <tr><td>Statistics backfill (per-sensor)</td><td><span class="tag done">working</span></td><td>All 19 current-period sensors populated: today hourly + ~80 days daily. Verified in the live recorder.</td></tr>
-  <tr><td>Show backfilled <em>today</em> in the History <em>tab</em></td><td><span class="tag research">researching</span></td><td><strong>The open problem.</strong> See §4.</td></tr>
+  <tr><td>Show backfilled <em>today</em> in the History <em>tab</em></td><td><span class="tag done">implemented</span></td><td>v0.1.12 writes real STATE rows into the recorder. See §4.</td></tr>
   <tr><td>Test suite</td><td><span class="tag done">17/17</span></td><td>7 pure billing + 10 runtime (pytest-homeassistant-custom-component).</td></tr>
 </table>
 
@@ -100,9 +100,19 @@ network/ancillary/PSO only — exempt from production, fuel adjustment and RES f
   <li><strong>Current-period history.</strong> Each refresh recomputes the bill for every day from period start → today and writes it as each sensor's own long-term statistic (<code>async_import_statistics</code>, <code>source="recorder"</code>, <code>state_class=total</code>): past days as <em>daily</em> (end-of-day) points, today <em>hour-by-hour</em>. Idempotent.</li>
 </ul>
 
-<h2 id="open">4. The open problem — History tab vs. statistics</h2>
+<h2 id="open">4. History tab vs. statistics — resolved (v0.1.12)</h2>
 <div class="card">
-<p><strong>Goal:</strong> the bill-item sensors should show their full per-period curve — including <em>today, hourly</em> — in the entity <strong>History tab</strong>.</p>
+<p><strong>Goal:</strong> the bill-item sensors must show their full per-period curve — including <em>today, hourly</em> — in the entity <strong>History tab</strong>.</p>
+<p><strong>Resolution (web-researched, then implemented):</strong> within the recorder retention window the History tab renders the raw <code>states</code> table and <em>never</em> falls back to statistics — so the only way to show today's curve there is to <strong>write real <code>states</code> rows</strong>. There is no public API; <code>async_import_statistics</code> writes statistics tables only. v0.1.12 therefore writes today's hourly bill values directly into the recorder via the private <code>db_schema</code> models (<code>States</code>/<code>StatesMeta</code>/<code>StateAttributes</code>), on the recorder executor, in an atomic transaction, idempotent by exact-second dedup, reusing the live entity's attributes. A test confirms the rows appear via <code>state_changes_during_period</code> (the History-tab source).</p>
+<p><strong>Accepted caveats</strong> (documented, deliberate):</p>
+<ul>
+  <li>Uses recorder <em>private</em> APIs — can break across HA schema migrations; pin/track versions.</li>
+  <li>Inserted states are <strong>purged after <code>purge_keep_days</code></strong> (~10 days) like any state — so the backfill is re-run every refresh (and old days fall back to the long-term statistics, which we also keep).</li>
+  <li>The reference library <code>ldotlopez/ha-historical-sensor</code> removed this in v3.0 as "fragile"; we accept the fragility because the History-tab display was a hard requirement.</li>
+</ul>
+<p class="small">Supported-but-rejected alternatives: a <code>statistics-graph</code> card (durable, but not the History tab and hourly-bucketed); per-entity <code>recorder.purge_entities</code> to force statistics fallback (hourly-averaged, lossy). <code>recorder: exclude</code> does NOT work (it also kills statistics).</p>
+<hr style="margin:16px 0">
+<p class="small"><strong>Original diagnosis (kept for context):</strong></p>
 <p><strong>What's verified in the live recorder right now:</strong></p>
 <table>
   <tr><th>Check (sensor.eac_current_total)</th><th>Result</th></tr>
@@ -118,7 +128,7 @@ network/ancillary/PSO only — exempt from production, fuel adjustment and RES f
   <li>Today has sparse states (and a morning gap, because the integration was <em>down</em> 00:00→11:20 under the broken 0.1.9) → History shows those <strong>states</strong>, hiding the (correct) backfilled hourly statistics.</li>
 </ul>
 <blockquote>So nothing was ever "backfilled as states" — it has always been statistics. Old days display them because they lack states; today does not because it has (sparse) states that take precedence.</blockquote>
-<p><strong>Constraint:</strong> Home Assistant exposes <code>async_import_statistics</code> for statistics but <em>no public API to inject historical states</em>. Making today's backfill appear in the History tab therefore requires either (a) writing historical <code>State</code> rows into the recorder directly, or (b) a supported way to make History fall back to statistics for the live entity. <span class="tag research">A multi-agent web-research workflow is running to determine which is real, viable and purge-safe; this section will be updated with the verdict + plan.</span></p>
+<p><strong>Constraint:</strong> Home Assistant exposes <code>async_import_statistics</code> for statistics but <em>no public API to inject historical states</em> — which is why option (a), direct <code>states</code> insertion, was implemented in v0.1.12 (above).</p>
 </div>
 
 <h2>5. Issues faced</h2>
@@ -143,9 +153,10 @@ network/ancillary/PSO only — exempt from production, fuel adjustment and RES f
 
 <h2>7. Next steps</h2>
 <ul>
-  <li><span class="tag research">in&nbsp;progress</span> Resolve the History-tab display of today's backfill (research workflow → verdict → implement).</li>
+  <li><span class="tag done">done</span> History-tab display of today's backfill — direct <code>states</code> insertion (v0.1.12).</li>
   <li><span class="tag open">queued</span> Move <code>rates_data.json</code> load off the event loop (recorder flags it as a blocking call).</li>
-  <li><span class="tag open">queued</span> Confirm the intended export sensor (grid export vs. solar yield) with the user.</li>
+  <li><span class="tag open">queued</span> Confirm the intended export sensor (grid export vs. solar yield).</li>
+  <li><span class="tag open">watch</span> The states backfill uses private recorder models — re-verify on each HA upgrade.</li>
 </ul>
 
 <hr>

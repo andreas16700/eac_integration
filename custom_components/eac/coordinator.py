@@ -41,6 +41,7 @@ from .const import (
 )
 from .rates import resolve_month_rates
 from .recorder_util import async_meter_delta, async_state_series
+from .state_backfill import async_backfill_states
 
 # Bill line items worth a daily history (cumulative over the period).
 _CUMULATIVE = {
@@ -297,6 +298,17 @@ class EacCoordinator(DataUpdateCoordinator):
                 unit_class="energy" if unit == KWH else None,
             )
             async_import_statistics(self.hass, meta, rows)
+
+            # Also write today's hourly values as real STATE rows, so they appear
+            # in the entity History tab (statistics never render there for today).
+            state_points = [(when, getattr(bill, key)) for when, bill in hour_series]
+            if state_points:
+                live = self.hass.states.get(stat_id)
+                attrs = dict(live.attributes) if live else {"unit_of_measurement": unit}
+                try:
+                    await async_backfill_states(self.hass, stat_id, state_points, attrs)
+                except Exception as err:  # noqa: BLE001 — best-effort, never break updates
+                    _LOGGER.warning("EAC: state backfill for %s failed: %s", stat_id, err)
 
         if resolved:
             self._backfilled_day = today

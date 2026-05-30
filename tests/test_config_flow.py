@@ -12,6 +12,7 @@ from datetime import timedelta
 
 import pytest
 from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.history import state_changes_during_period
 from homeassistant.components.recorder.models import (
     StatisticData,
     StatisticMeanType,
@@ -305,4 +306,50 @@ async def test_current_today_hourly_backfill(recorder_mock, enable_custom_integr
     assert today_points, f"no intraday points for today: {series}"
     states = [r["state"] for r in series]
     assert states == sorted(states), states  # non-decreasing through the period
+    await _unload(hass, entry.entry_id)
+
+
+async def test_current_today_state_backfill(recorder_mock, enable_custom_integrations, hass: HomeAssistant) -> None:
+    """Today's hourly values are written as real STATE rows (visible in History tab)."""
+    now = dt_util.now()
+    start_date = (now - timedelta(days=2)).date()
+    base = dt_util.start_of_local_day(start_date)
+    today_start = dt_util.start_of_local_day(now.date())
+
+    nhours = int((now - base).total_seconds() // 3600) + 1
+    rows = [
+        StatisticData(start=base + timedelta(hours=i), state=float(i + 1), sum=float(i + 1))
+        for i in range(nhours)
+    ]
+    meta = StatisticMetaData(
+        mean_type=StatisticMeanType.NONE, has_mean=False, has_sum=True, name=None,
+        source="recorder", statistic_id="sensor.grid_import", unit_of_measurement="kWh",
+        unit_class="energy",
+    )
+    async_import_statistics(hass, meta, rows)
+    await async_wait_recording_done(hass)
+
+    entry = _entry(**{CONF_PERIODS: [{
+        "id": "prev", "name": "prev",
+        "start": (start_date - timedelta(days=30)).isoformat(),
+        "end": start_date.isoformat(),
+    }]})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await async_wait_recording_done(hass)
+
+    # Real state history (what the History tab renders) must contain the
+    # backfilled hourly points for today — not just statistics.
+    changes = await get_instance(hass).async_add_executor_job(
+        state_changes_during_period, hass, today_start, now + timedelta(hours=1),
+        "sensor.eac_current_total",
+    )
+    pts = changes.get("sensor.eac_current_total") or []
+    backfilled = [
+        s for s in pts
+        if s.state not in ("unknown", "unavailable", None)
+        and dt_util.as_local(s.last_updated) < now - timedelta(minutes=30)
+    ]
+    assert len(backfilled) >= 2, [(str(s.last_updated), s.state) for s in pts]
     await _unload(hass, entry.entry_id)
