@@ -14,6 +14,7 @@ import argparse, json, re, sys
 import datetime as dt
 from zoneinfo import ZoneInfo
 import pymysql
+from pymysql.constants import CLIENT
 
 sys.path.insert(0, "/config/custom_components/eac")
 import billing  # the integration's own calculation code  # noqa: E402
@@ -39,8 +40,11 @@ def db_conn():
     m = re.search(r"recorder_db_url:\s*\"?(mysql\+pymysql://[^\"\s]+)", sec)
     u = re.match(r"mysql\+pymysql://([^:]+):([^@]+)@([^/:]+)(?::(\d+))?/([^?]+)", m.group(1))
     user, pw, host, port, name = u.groups()
+    # FOUND_ROWS so UPDATE reports matched (not changed) rows — required for the
+    # idempotent upsert: a re-run with identical values must NOT insert duplicates.
     return pymysql.connect(host=host, port=int(port or 3306), user=user,
-                           password=pw, database=name, charset="utf8mb4", autocommit=False)
+                           password=pw, database=name, charset="utf8mb4",
+                           autocommit=False, client_flag=CLIENT.FOUND_ROWS)
 
 
 def load_cfg():
@@ -128,44 +132,48 @@ def main():
         cur.execute("SELECT attributes_id FROM states WHERE metadata_id=%s AND attributes_id IS NOT NULL "
                     "ORDER BY last_updated_ts DESC LIMIT 1", (mid,))
         ar = cur.fetchone()
-        cur.execute("SELECT last_updated_ts FROM states WHERE metadata_id=%s AND last_updated_ts>=%s "
-                    "AND last_updated_ts<%s", (mid, lo - 300, hi + 300))
-        buckets = {int(x[0] // 300) for x in cur.fetchall() if x[0] is not None}
-        meta[suffix] = (mid, ar[0] if ar else None, buckets)
+        meta[suffix] = (mid, ar[0] if ar else None)
 
-    # Exact same calculation + baselines as the integration:
-    cons_series = [(ts, v, 0.0) for ts, v in cons]              # (key, reading, change)
-    exp_series = [(ts, v, 0.0) for ts, v in sorted(exp_map.items())]
+    # Source short-term buckets are already on the 5-minute grid (:00,:05,…).
+    # Exact same calc + baselines as the integration:
+    cons_series = [(int(ts), v, 0.0) for ts, v in cons]   # (grid_ts, reading, _)
+    exp_series = [(int(ts), v, 0.0) for ts, v in sorted(exp_map.items())]
     points = billing.compute_bill_series(
         cons_series, exp_series, fuel_c, prod, cfg["tariff"], gbase=base_g, ebase=base_e
     )
 
-    preview, inserted = [], 0
+    # Idempotent UPSERT at the exact grid timestamp: update the row there if it
+    # exists (corrects stale/spike points), else insert. Re-running converges.
+    preview, upserted = [], 0
     for ts, bill in points:
         preview.append((ts, bill.total, bill.gross_kwh, bill.net_kwh))
         for attr, suffix in MAP.items():
             if suffix not in meta:
                 continue
-            mid, aid, buckets = meta[suffix]
-            if int(ts // 300) in buckets:
-                continue
+            mid, aid = meta[suffix]
+            val = f"{getattr(bill, attr):.4f}"
             if not args.dry_run:
-                cur.execute(
-                    "INSERT INTO states (metadata_id,state,attributes_id,last_updated_ts,"
-                    "last_changed_ts,last_reported_ts,origin_idx) VALUES (%s,%s,%s,%s,%s,%s,0)",
-                    (mid, f"{getattr(bill, attr):.4f}", aid, ts, ts, ts))
+                n = cur.execute(
+                    "UPDATE states SET state=%s, attributes_id=%s, last_changed_ts=%s, "
+                    "last_reported_ts=%s WHERE metadata_id=%s AND last_updated_ts=%s",
+                    (val, aid, ts, ts, mid, ts))
+                if n == 0:
+                    cur.execute(
+                        "INSERT INTO states (metadata_id,state,attributes_id,last_updated_ts,"
+                        "last_changed_ts,last_reported_ts,origin_idx) VALUES (%s,%s,%s,%s,%s,%s,0)",
+                        (mid, val, aid, ts, ts, ts))
             if suffix == "total":
-                inserted += 1
+                upserted += 1
 
     print(f"\n{len(cons)} 5-min points. Sample (ts, total€, gross, net):")
     for ts, tot, g, n in preview[:3] + preview[-3:]:
         print(f"  {dt.datetime.fromtimestamp(ts, TZ):%m-%d %H:%M}  €{tot:7.2f}  g={g:7.2f} n={n:7.2f}")
     if args.dry_run:
-        print(f"\nDRY-RUN — would insert ~{inserted} rows/sensor across {len(meta)} sensors.")
+        print(f"\nDRY-RUN — would upsert {upserted} grid points/sensor across {len(meta)} sensors.")
         conn.rollback()
     else:
         conn.commit()
-        print(f"\nINSERTED ~{inserted} rows/sensor across {len(meta)} sensors.")
+        print(f"\nUPSERTED {upserted} grid points/sensor across {len(meta)} sensors.")
     cur.close(); conn.close()
 
 
